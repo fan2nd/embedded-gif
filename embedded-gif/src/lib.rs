@@ -214,6 +214,7 @@ where
     frames: &'static [RawGifFrame<C, BO>],
     index: usize,
     elapsed_millis: u32,
+    composited_index: Option<usize>,
 }
 
 impl<C, BO> RawGif<C, BO>
@@ -226,6 +227,7 @@ where
             frames,
             index: 0,
             elapsed_millis: 0,
+            composited_index: None,
         }
     }
 
@@ -252,6 +254,7 @@ where
     pub fn reset(&mut self) {
         self.index = 0;
         self.elapsed_millis = 0;
+        self.composited_index = None;
     }
 
     pub fn advance(&mut self) -> Option<&RawGifFrame<C, BO>> {
@@ -291,7 +294,7 @@ where
     }
 
     pub fn draw_current_composited<D>(
-        &self,
+        &mut self,
         target: &mut D,
         origin: Point,
         background: C,
@@ -301,6 +304,22 @@ where
         RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
     {
         if self.frames.is_empty() {
+            return Ok(());
+        }
+
+        if self.composited_index == previous_index(self.index, self.frames.len()) {
+            if let Some(previous) = self
+                .composited_index
+                .and_then(|index| self.frames.get(index))
+            {
+                Self::dispose_frame(target, origin, background, previous)?;
+            }
+
+            if let Some(frame) = self.current_frame() {
+                Self::draw_frame(target, origin, frame)?;
+            }
+
+            self.composited_index = Some(self.index);
             return Ok(());
         }
 
@@ -320,6 +339,7 @@ where
             }
         }
 
+        self.composited_index = Some(self.index);
         Ok(())
     }
 
@@ -438,4 +458,14 @@ where
     }
 
     changed
+}
+
+fn previous_index(index: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        None
+    } else if index == 0 {
+        Some(len - 1)
+    } else {
+        Some(index - 1)
+    }
 }
