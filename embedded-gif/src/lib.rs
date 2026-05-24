@@ -8,27 +8,39 @@ use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::Point,
     image::{Image, ImageRaw},
-    pixelcolor::Rgb888,
+    iterator::raw::RawDataSlice,
+    pixelcolor::{
+        raw::{BigEndian, ByteOrder},
+        PixelColor, Rgb888,
+    },
     Drawable,
 };
 
-pub type GifImage = ImageRaw<'static, Rgb888>;
+pub type GifImage<C = Rgb888, BO = BigEndian> = ImageRaw<'static, C, BO>;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct GifFrame {
-    image: GifImage,
+pub struct GifFrame<C = Rgb888, BO = BigEndian>
+where
+    C: PixelColor + From<C::Raw> + 'static,
+    BO: ByteOrder + 'static,
+{
+    image: GifImage<C, BO>,
     delay_centiseconds: u16,
 }
 
-impl GifFrame {
-    pub const fn new(image: GifImage, delay_centiseconds: u16) -> Self {
+impl<C, BO> GifFrame<C, BO>
+where
+    C: PixelColor + From<C::Raw> + 'static,
+    BO: ByteOrder + 'static,
+{
+    pub const fn new(image: GifImage<C, BO>, delay_centiseconds: u16) -> Self {
         Self {
             image,
             delay_centiseconds,
         }
     }
 
-    pub const fn image(&self) -> &GifImage {
+    pub const fn image(&self) -> &GifImage<C, BO> {
         &self.image
     }
 
@@ -42,14 +54,22 @@ impl GifFrame {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct GifAnimation {
-    frames: &'static [GifFrame],
+pub struct GifAnimation<C = Rgb888, BO = BigEndian>
+where
+    C: PixelColor + From<C::Raw> + 'static,
+    BO: ByteOrder + 'static,
+{
+    frames: &'static [GifFrame<C, BO>],
     index: usize,
     elapsed_millis: u32,
 }
 
-impl GifAnimation {
-    pub const fn new(frames: &'static [GifFrame]) -> Self {
+impl<C, BO> GifAnimation<C, BO>
+where
+    C: PixelColor + From<C::Raw> + 'static,
+    BO: ByteOrder + 'static,
+{
+    pub const fn new(frames: &'static [GifFrame<C, BO>]) -> Self {
         Self {
             frames,
             index: 0,
@@ -57,7 +77,7 @@ impl GifAnimation {
         }
     }
 
-    pub const fn frames(&self) -> &'static [GifFrame] {
+    pub const fn frames(&self) -> &'static [GifFrame<C, BO>] {
         self.frames
     }
 
@@ -73,11 +93,11 @@ impl GifAnimation {
         self.index
     }
 
-    pub fn current_frame(&self) -> Option<&GifFrame> {
+    pub fn current_frame(&self) -> Option<&GifFrame<C, BO>> {
         self.frames.get(self.index)
     }
 
-    pub fn current_image(&self) -> Option<&GifImage> {
+    pub fn current_image(&self) -> Option<&GifImage<C, BO>> {
         self.current_frame().map(GifFrame::image)
     }
 
@@ -86,7 +106,7 @@ impl GifAnimation {
         self.elapsed_millis = 0;
     }
 
-    pub fn advance(&mut self) -> Option<&GifFrame> {
+    pub fn advance(&mut self) -> Option<&GifFrame<C, BO>> {
         if self.frames.is_empty() {
             return None;
         }
@@ -120,7 +140,8 @@ impl GifAnimation {
 
     pub fn draw_current<D>(&self, target: &mut D, position: Point) -> Result<(), D::Error>
     where
-        D: DrawTarget<Color = Rgb888>,
+        D: DrawTarget<Color = C>,
+        RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
     {
         if let Some(image) = self.current_image() {
             Image::new(image, position).draw(target)
