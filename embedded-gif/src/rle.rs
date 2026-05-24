@@ -10,12 +10,12 @@ use crate::{
     frame::GifFrame,
 };
 
-const TOKEN_SKIP: u8 = 0b0000_0000;
-const TOKEN_SOLID: u8 = 0b0100_0000;
 const TOKEN_RAW: u8 = 0b1000_0000;
-const TOKEN_RESERVED: u8 = 0b1100_0000;
+const TOKEN_REPEAT: u8 = 0b1100_0000;
+const TOKEN_SKIP_MASK: u8 = 0b1000_0000;
 const TOKEN_KIND_MASK: u8 = 0b1100_0000;
-const TOKEN_LEN_MASK: u8 = 0b0011_1111;
+const TOKEN_LONG_LEN_MASK: u8 = 0b0111_1111;
+const TOKEN_SHORT_LEN_MASK: u8 = 0b0011_1111;
 
 #[doc(hidden)]
 pub trait RleColor: Copy {
@@ -117,8 +117,8 @@ where
     cursor: usize,
     pixel_count: usize,
     raw_remaining: usize,
-    solid_remaining: usize,
-    solid_color: Option<C>,
+    repeat_remaining: usize,
+    repeat_color: Option<C>,
 }
 
 impl<'a, C> RlePixels<'a, C>
@@ -133,8 +133,8 @@ where
             cursor: 0,
             pixel_count,
             raw_remaining: 0,
-            solid_remaining: 0,
-            solid_color: None,
+            repeat_remaining: 0,
+            repeat_color: None,
         }
     }
 
@@ -155,11 +155,11 @@ where
                 return Some((index, color));
             }
 
-            if self.solid_remaining > 0 {
-                let color = self.solid_color?;
+            if self.repeat_remaining > 0 {
+                let color = self.repeat_color?;
                 let index = self.cursor;
                 self.cursor += 1;
-                self.solid_remaining -= 1;
+                self.repeat_remaining -= 1;
                 return Some((index, color));
             }
 
@@ -174,17 +174,21 @@ where
     fn read_token(&mut self) -> Option<()> {
         let token = *self.data.get(self.offset)?;
         self.offset += 1;
-        let len = usize::from(token & TOKEN_LEN_MASK) + 1;
 
+        if token & TOKEN_SKIP_MASK == 0 {
+            let len = usize::from(token & TOKEN_LONG_LEN_MASK) + 1;
+            self.cursor = self.cursor.saturating_add(len);
+            return Some(());
+        }
+
+        let len = usize::from(token & TOKEN_SHORT_LEN_MASK) + 1;
         match token & TOKEN_KIND_MASK {
-            TOKEN_SKIP => self.cursor = self.cursor.saturating_add(len),
-            TOKEN_SOLID => {
-                self.solid_color = Some(self.read_color()?);
-                self.align_to_next_byte();
-                self.solid_remaining = len;
-            }
             TOKEN_RAW => self.raw_remaining = len,
-            TOKEN_RESERVED => return None,
+            TOKEN_REPEAT => {
+                self.repeat_color = Some(self.read_color()?);
+                self.align_to_next_byte();
+                self.repeat_remaining = len;
+            }
             _ => return None,
         }
 

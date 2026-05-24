@@ -1,7 +1,7 @@
 use crate::input::{Dither, IncludeGifOptions, PixelFormat};
 
-const TOKEN_SOLID: u8 = 0b0100_0000;
 const TOKEN_RAW: u8 = 0b1000_0000;
+const TOKEN_REPEAT: u8 = 0b1100_0000;
 
 pub(crate) fn encode_frame(
     rgba: &[u8],
@@ -63,7 +63,7 @@ impl Encoder {
                     index += len;
                 }
                 Symbol::Opaque(color) => {
-                    let solid_len = symbols[index..]
+                    let repeat_len = symbols[index..]
                         .iter()
                         .take_while(
                             |symbol| matches!(symbol, Symbol::Opaque(next) if *next == color),
@@ -74,11 +74,11 @@ impl Encoder {
                         .take_while(|symbol| matches!(symbol, Symbol::Opaque(_)))
                         .count();
 
-                    if solid_len >= 2 || opaque_len == 1 {
-                        self.push_solid(color, solid_len);
-                        index += solid_len;
+                    if repeat_len >= 2 || opaque_len == 1 {
+                        self.push_repeat(color, repeat_len);
+                        index += repeat_len;
                     } else {
-                        let len = opaque_len.min(raw_until_solid(&symbols[index..]));
+                        let len = opaque_len.min(raw_until_repeat(&symbols[index..]));
                         self.push_raw(&symbols[index..index + len]);
                         index += len;
                     }
@@ -90,12 +90,12 @@ impl Encoder {
     }
 
     fn push_skip(&mut self, len: usize) {
-        self.push_chunks(0, len, |_| {});
+        self.push_chunks(0, 128, len, |_| {});
     }
 
-    fn push_solid(&mut self, color: Color, len: usize) {
+    fn push_repeat(&mut self, color: Color, len: usize) {
         let pixel_format = self.pixel_format;
-        self.push_chunks(TOKEN_SOLID, len, |data| {
+        self.push_chunks(TOKEN_REPEAT, 64, len, |data| {
             let mut bits = Bits::default();
             color.push(data, &mut bits, pixel_format);
         });
@@ -123,11 +123,12 @@ impl Encoder {
     fn push_chunks(
         &mut self,
         token_kind: u8,
+        max_len: usize,
         mut len: usize,
         mut payload: impl FnMut(&mut Vec<u8>),
     ) {
         while len > 0 {
-            let chunk = len.min(64);
+            let chunk = len.min(max_len);
             self.data.push(token_kind | (chunk - 1) as u8);
             payload(&mut self.data);
             len -= chunk;
@@ -239,7 +240,7 @@ impl BinaryDither {
     }
 }
 
-fn raw_until_solid(symbols: &[Symbol]) -> usize {
+fn raw_until_repeat(symbols: &[Symbol]) -> usize {
     let mut len = 0usize;
 
     while len < symbols.len() {
@@ -247,12 +248,12 @@ fn raw_until_solid(symbols: &[Symbol]) -> usize {
             break;
         };
 
-        let solid_len = symbols[len..]
+        let repeat_len = symbols[len..]
             .iter()
             .take_while(|symbol| matches!(symbol, Symbol::Opaque(next) if *next == color))
             .count();
 
-        if len > 0 && solid_len >= 2 {
+        if len > 0 && repeat_len >= 2 {
             break;
         }
 
