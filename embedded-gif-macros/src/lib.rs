@@ -7,7 +7,9 @@ use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{format_ident, quote};
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, Ident, LitBool, LitStr, Token,
+    parse_macro_input,
+    spanned::Spanned,
+    GenericArgument, Ident, LitBool, LitStr, PathArguments, Token, Type, TypePath,
 };
 
 #[proc_macro]
@@ -44,6 +46,17 @@ impl Default for IncludeGifOptions {
 
 #[derive(Copy, Clone)]
 enum PixelFormat {
+    Rgb888,
+    Rgb565,
+    BinaryColor,
+    PaletteIndex1(PaletteColor),
+    PaletteIndex2(PaletteColor),
+    PaletteIndex4(PaletteColor),
+    PaletteIndex8(PaletteColor),
+}
+
+#[derive(Copy, Clone)]
+enum PaletteColor {
     Rgb888,
     Rgb565,
     BinaryColor,
@@ -89,7 +102,7 @@ impl Parse for IncludeGifInput {
 }
 
 enum OptionValue {
-    Ident(Ident),
+    Type(TypePath),
     Bool(LitBool),
 }
 
@@ -98,26 +111,69 @@ impl Parse for OptionValue {
         if input.peek(LitBool) {
             Ok(Self::Bool(input.parse()?))
         } else {
-            Ok(Self::Ident(input.parse()?))
+            Ok(Self::Type(input.parse()?))
         }
     }
 }
 
 fn parse_pixel_format(value: OptionValue) -> syn::Result<PixelFormat> {
-    let OptionValue::Ident(value) = value else {
+    let OptionValue::Type(value) = value else {
         return Err(syn::Error::new(
             Span::call_site(),
-            "`pixel_format` expects `Rgb888`, `Rgb565`, or `BinaryColor`",
+            "`pixel_format` expects `Rgb888`, `Rgb565`, `BinaryColor`, `PaletteIndex1`, `PaletteIndex2`, `PaletteIndex4`, or `PaletteIndex8`",
         ));
     };
-
-    match value.to_string().as_str() {
+    let Some(segment) = value.path.segments.last() else {
+        return Err(syn::Error::new(value.path.span(), "invalid pixel format"));
+    };
+    match segment.ident.to_string().as_str() {
         "Rgb888" => Ok(PixelFormat::Rgb888),
         "Rgb565" => Ok(PixelFormat::Rgb565),
         "BinaryColor" => Ok(PixelFormat::BinaryColor),
+        "PaletteIndex1" => Ok(PixelFormat::PaletteIndex1(parse_palette_color(
+            &segment.arguments,
+        )?)),
+        "PaletteIndex2" => Ok(PixelFormat::PaletteIndex2(parse_palette_color(
+            &segment.arguments,
+        )?)),
+        "PaletteIndex4" => Ok(PixelFormat::PaletteIndex4(parse_palette_color(
+            &segment.arguments,
+        )?)),
+        "PaletteIndex8" => Ok(PixelFormat::PaletteIndex8(parse_palette_color(
+            &segment.arguments,
+        )?)),
         _ => Err(syn::Error::new(
-            value.span(),
-            "supported pixel formats are `Rgb888`, `Rgb565`, and `BinaryColor`",
+            segment.ident.span(),
+            "supported pixel formats are `Rgb888`, `Rgb565`, `BinaryColor`, `PaletteIndex1`, `PaletteIndex2`, `PaletteIndex4`, and `PaletteIndex8`",
+        )),
+    }
+}
+
+fn parse_palette_color(arguments: &PathArguments) -> syn::Result<PaletteColor> {
+    let PathArguments::AngleBracketed(arguments) = arguments else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "palette index formats require a color parameter, for example `PaletteIndex4<Rgb565>`",
+        ));
+    };
+
+    let Some(GenericArgument::Type(Type::Path(color))) = arguments.args.first() else {
+        return Err(syn::Error::new(
+            arguments.span(),
+            "palette index color parameter expects `Rgb888`, `Rgb565`, or `BinaryColor`",
+        ));
+    };
+    let Some(segment) = color.path.segments.last() else {
+        return Err(syn::Error::new(color.path.span(), "invalid palette color"));
+    };
+
+    match segment.ident.to_string().as_str() {
+        "Rgb888" => Ok(PaletteColor::Rgb888),
+        "Rgb565" => Ok(PaletteColor::Rgb565),
+        "BinaryColor" => Ok(PaletteColor::BinaryColor),
+        _ => Err(syn::Error::new(
+            segment.ident.span(),
+            "supported palette colors are `Rgb888`, `Rgb565`, and `BinaryColor`",
         )),
     }
 }
@@ -131,9 +187,15 @@ fn parse_dither(value: OptionValue) -> syn::Result<Dither> {
                 Ok(Dither::None)
             }
         }
-        OptionValue::Ident(value) => match value.to_string().as_str() {
-            "None" => Ok(Dither::None),
-            "FloydSteinberg" => Ok(Dither::FloydSteinberg),
+        OptionValue::Type(value) => match value
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            .as_deref()
+        {
+            Some("None") => Ok(Dither::None),
+            Some("FloydSteinberg") => Ok(Dither::FloydSteinberg),
             _ => Err(syn::Error::new(
                 value.span(),
                 "supported dither values are `true`, `false`, `None`, and `FloydSteinberg`",
@@ -221,6 +283,32 @@ fn color_type(embedded_gif: &TokenStream2, pixel_format: PixelFormat) -> TokenSt
         PixelFormat::Rgb888 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb888),
         PixelFormat::Rgb565 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb565),
         PixelFormat::BinaryColor => {
+            quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor)
+        }
+        PixelFormat::PaletteIndex1(color) => {
+            let color = palette_color_type(embedded_gif, color);
+            quote!(#embedded_gif::PaletteIndex1<#color>)
+        }
+        PixelFormat::PaletteIndex2(color) => {
+            let color = palette_color_type(embedded_gif, color);
+            quote!(#embedded_gif::PaletteIndex2<#color>)
+        }
+        PixelFormat::PaletteIndex4(color) => {
+            let color = palette_color_type(embedded_gif, color);
+            quote!(#embedded_gif::PaletteIndex4<#color>)
+        }
+        PixelFormat::PaletteIndex8(color) => {
+            let color = palette_color_type(embedded_gif, color);
+            quote!(#embedded_gif::PaletteIndex8<#color>)
+        }
+    }
+}
+
+fn palette_color_type(embedded_gif: &TokenStream2, color: PaletteColor) -> TokenStream2 {
+    match color {
+        PaletteColor::Rgb888 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb888),
+        PaletteColor::Rgb565 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb565),
+        PaletteColor::BinaryColor => {
             quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor)
         }
     }
@@ -322,6 +410,7 @@ enum RleSymbol {
 enum QuantizedColor {
     Rgb(u8, u8, u8),
     Binary(bool),
+    Index(u8),
 }
 
 fn matching_len(
@@ -383,7 +472,7 @@ fn push_solid(
     while len > 0 {
         let chunk = len.min(64);
         data.push(0b0100_0000 | (chunk - 1) as u8);
-        push_color(data, pixel_format, color);
+        push_color(data, pixel_format, color, &mut 0);
         len -= chunk;
     }
 }
@@ -393,20 +482,26 @@ fn push_raw(data: &mut Vec<u8>, pixel_format: PixelFormat, symbols: &[RleSymbol]
 
     while offset < symbols.len() {
         let chunk = (symbols.len() - offset).min(64);
+        let mut bit_offset = 0;
         data.push(0b1000_0000 | (chunk - 1) as u8);
 
         for symbol in &symbols[offset..offset + chunk] {
             let RleSymbol::Opaque(color) = *symbol else {
                 unreachable!("raw chunks can only contain opaque pixels");
             };
-            push_color(data, pixel_format, color);
+            push_color(data, pixel_format, color, &mut bit_offset);
         }
 
         offset += chunk;
     }
 }
 
-fn push_color(data: &mut Vec<u8>, pixel_format: PixelFormat, color: QuantizedColor) {
+fn push_color(
+    data: &mut Vec<u8>,
+    pixel_format: PixelFormat,
+    color: QuantizedColor,
+    bit_offset: &mut u8,
+) {
     match (pixel_format, color) {
         (PixelFormat::Rgb888, QuantizedColor::Rgb(red, green, blue)) => {
             data.extend_from_slice(&[red, green, blue]);
@@ -416,6 +511,12 @@ fn push_color(data: &mut Vec<u8>, pixel_format: PixelFormat, color: QuantizedCol
             data.extend_from_slice(&value.to_be_bytes());
         }
         (PixelFormat::BinaryColor, QuantizedColor::Binary(value)) => data.push(u8::from(value)),
+        (PixelFormat::PaletteIndex1(_), QuantizedColor::Index(value))
+        | (PixelFormat::PaletteIndex2(_), QuantizedColor::Index(value))
+        | (PixelFormat::PaletteIndex4(_), QuantizedColor::Index(value))
+        | (PixelFormat::PaletteIndex8(_), QuantizedColor::Index(value)) => {
+            push_bits(data, bit_offset, value, pixel_format.bits_per_pixel())
+        }
         _ => unreachable!("pixel format and quantized color mismatch"),
     }
 }
@@ -444,6 +545,47 @@ fn quantized_color(
         PixelFormat::BinaryColor => QuantizedColor::Binary(
             dithered_binary.unwrap_or_else(|| grayscale(red, green, blue) >= 128),
         ),
+        PixelFormat::PaletteIndex1(_)
+        | PixelFormat::PaletteIndex2(_)
+        | PixelFormat::PaletteIndex4(_)
+        | PixelFormat::PaletteIndex8(_) => QuantizedColor::Index(palette_index(
+            grayscale(red, green, blue),
+            pixel_format.bits_per_pixel(),
+        )),
+    }
+}
+
+impl PixelFormat {
+    fn bits_per_pixel(self) -> u8 {
+        match self {
+            PixelFormat::Rgb888 => 24,
+            PixelFormat::Rgb565 => 16,
+            PixelFormat::BinaryColor | PixelFormat::PaletteIndex1(_) => 1,
+            PixelFormat::PaletteIndex2(_) => 2,
+            PixelFormat::PaletteIndex4(_) => 4,
+            PixelFormat::PaletteIndex8(_) => 8,
+        }
+    }
+}
+
+fn palette_index(luminance: i16, bits_per_pixel: u8) -> u8 {
+    let max = (1u16 << bits_per_pixel) - 1;
+    ((luminance.clamp(0, 255) as u16 * max + 127) / 255) as u8
+}
+
+fn push_bits(data: &mut Vec<u8>, bit_offset: &mut u8, value: u8, bits_per_pixel: u8) {
+    for bit in (0..bits_per_pixel).rev() {
+        if *bit_offset == 0 {
+            data.push(0);
+        }
+
+        let last = data.len() - 1;
+        data[last] |= ((value >> bit) & 1) << (7 - *bit_offset);
+
+        *bit_offset += 1;
+        if *bit_offset == 8 {
+            *bit_offset = 0;
+        }
     }
 }
 

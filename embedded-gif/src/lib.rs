@@ -7,7 +7,10 @@ pub use embedded_graphics;
 use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::{Point, Size},
-    pixelcolor::{BinaryColor, PixelColor, Rgb565, Rgb888},
+    pixelcolor::{
+        raw::{RawData, RawU1, RawU2, RawU4, RawU8},
+        BinaryColor, PixelColor, Rgb565, Rgb888,
+    },
     primitives::Rectangle,
     transform::Transform,
     Pixel,
@@ -20,6 +23,49 @@ pub enum DisposalMethod {
     Background,
     Previous,
 }
+
+macro_rules! palette_index {
+    ($name:ident, $raw:ty, $max:expr) => {
+        #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+        pub struct $name<C> {
+            index: u8,
+            color: core::marker::PhantomData<C>,
+        }
+
+        impl<C> $name<C> {
+            pub const MAX: u8 = $max;
+
+            pub const fn new(index: u8) -> Self {
+                Self {
+                    index: index & Self::MAX,
+                    color: core::marker::PhantomData,
+                }
+            }
+
+            pub const fn index(self) -> u8 {
+                self.index
+            }
+        }
+
+        impl<C> PixelColor for $name<C>
+        where
+            C: PixelColor,
+        {
+            type Raw = $raw;
+        }
+
+        impl<C> From<$raw> for $name<C> {
+            fn from(raw: $raw) -> Self {
+                Self::new(raw.into_inner())
+            }
+        }
+    };
+}
+
+palette_index!(PaletteIndex1, RawU1, 0x01);
+palette_index!(PaletteIndex2, RawU2, 0x03);
+palette_index!(PaletteIndex4, RawU4, 0x0f);
+palette_index!(PaletteIndex8, RawU8, 0xff);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct GifFrame<C = Rgb888>
@@ -318,24 +364,27 @@ const TOKEN_LEN_MASK: u8 = 0b0011_1111;
 
 #[doc(hidden)]
 pub trait RleColor: Copy {
-    const BYTES_PER_PIXEL: usize;
+    const BITS_PER_PIXEL: usize;
 
-    fn read(bytes: &[u8]) -> Option<Self>;
+    fn read(value: u32) -> Option<Self>;
 }
 
 impl RleColor for Rgb888 {
-    const BYTES_PER_PIXEL: usize = 3;
+    const BITS_PER_PIXEL: usize = 24;
 
-    fn read(bytes: &[u8]) -> Option<Self> {
-        Some(Self::new(*bytes.first()?, *bytes.get(1)?, *bytes.get(2)?))
+    fn read(value: u32) -> Option<Self> {
+        Some(Self::new(
+            ((value >> 16) & 0xff) as u8,
+            ((value >> 8) & 0xff) as u8,
+            (value & 0xff) as u8,
+        ))
     }
 }
 
 impl RleColor for Rgb565 {
-    const BYTES_PER_PIXEL: usize = 2;
+    const BITS_PER_PIXEL: usize = 16;
 
-    fn read(bytes: &[u8]) -> Option<Self> {
-        let value = u16::from_be_bytes([*bytes.first()?, *bytes.get(1)?]);
+    fn read(value: u32) -> Option<Self> {
         let red = ((value >> 11) & 0x1f) as u8;
         let green = ((value >> 5) & 0x3f) as u8;
         let blue = (value & 0x1f) as u8;
@@ -344,15 +393,35 @@ impl RleColor for Rgb565 {
 }
 
 impl RleColor for BinaryColor {
-    const BYTES_PER_PIXEL: usize = 1;
+    const BITS_PER_PIXEL: usize = 1;
 
-    fn read(bytes: &[u8]) -> Option<Self> {
-        match *bytes.first()? {
+    fn read(value: u32) -> Option<Self> {
+        match value {
             0 => Some(Self::Off),
             _ => Some(Self::On),
         }
     }
 }
+
+macro_rules! impl_rle_palette_index {
+    ($name:ident, $bits:expr) => {
+        impl<C> RleColor for $name<C>
+        where
+            C: PixelColor,
+        {
+            const BITS_PER_PIXEL: usize = $bits;
+
+            fn read(value: u32) -> Option<Self> {
+                Some(Self::new(value as u8))
+            }
+        }
+    };
+}
+
+impl_rle_palette_index!(PaletteIndex1, 1);
+impl_rle_palette_index!(PaletteIndex2, 2);
+impl_rle_palette_index!(PaletteIndex4, 4);
+impl_rle_palette_index!(PaletteIndex8, 8);
 
 struct RlePixels<'a, C>
 where
@@ -360,6 +429,7 @@ where
 {
     data: &'a [u8],
     offset: usize,
+    bit_offset: u8,
     cursor: usize,
     pixel_count: usize,
     raw_remaining: usize,
@@ -375,6 +445,7 @@ where
         Self {
             data,
             offset: 0,
+            bit_offset: 0,
             cursor: 0,
             pixel_count,
             raw_remaining: 0,
@@ -394,6 +465,9 @@ where
                 let index = self.cursor;
                 self.cursor += 1;
                 self.raw_remaining -= 1;
+                if self.raw_remaining == 0 {
+                    self.align_to_next_byte();
+                }
                 return Some((index, color));
             }
 
@@ -403,6 +477,10 @@ where
                 self.cursor += 1;
                 self.solid_remaining -= 1;
                 return Some((index, color));
+            }
+
+            if self.bit_offset != 0 {
+                return None;
             }
 
             let token = *self.data.get(self.offset)?;
@@ -415,6 +493,7 @@ where
                 }
                 TOKEN_SOLID => {
                     self.solid_color = Some(self.read_color()?);
+                    self.align_to_next_byte();
                     self.solid_remaining = len;
                 }
                 TOKEN_RAW => {
@@ -427,9 +506,27 @@ where
     }
 
     fn read_color(&mut self) -> Option<C> {
-        let end = self.offset.checked_add(C::BYTES_PER_PIXEL)?;
-        let color = C::read(self.data.get(self.offset..end)?)?;
-        self.offset = end;
-        Some(color)
+        let mut value = 0u32;
+
+        for _ in 0..C::BITS_PER_PIXEL {
+            let byte = *self.data.get(self.offset)?;
+            let bit = (byte >> (7 - self.bit_offset)) & 1;
+            value = (value << 1) | u32::from(bit);
+
+            self.bit_offset += 1;
+            if self.bit_offset == 8 {
+                self.bit_offset = 0;
+                self.offset += 1;
+            }
+        }
+
+        C::read(value)
+    }
+
+    fn align_to_next_byte(&mut self) {
+        if self.bit_offset != 0 {
+            self.bit_offset = 0;
+            self.offset += 1;
+        }
     }
 }
