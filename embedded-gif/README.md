@@ -18,7 +18,11 @@ animation.tick_millis(100);
 time. Each generated frame is a full canvas-sized `ImageRaw`.
 
 `include_raw_gif!` preserves GIF frame semantics. Each generated frame keeps its
-own image, top-left offset, delay, and disposal method.
+own image, top-left offset, delay, and disposal method. Use
+`draw_current_delta` when the caller maintains the framebuffer and applies only
+the current diff. Use `draw_current_composited` when the caller wants raw storage
+but wants the library to replay raw frames and draw the complete current visual
+state.
 
 Both macros support pixel conversion:
 

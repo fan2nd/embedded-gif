@@ -6,13 +6,15 @@ pub use embedded_graphics;
 
 use embedded_graphics::{
     draw_target::DrawTarget,
-    geometry::Point,
+    geometry::{OriginDimensions, Point},
     image::{Image, ImageRaw},
     iterator::raw::RawDataSlice,
     pixelcolor::{
         raw::{BigEndian, ByteOrder},
         PixelColor, Rgb888,
     },
+    primitives::Rectangle,
+    transform::Transform,
     Drawable,
 };
 
@@ -276,7 +278,7 @@ where
         self.tick_millis(centiseconds.saturating_mul(10))
     }
 
-    pub fn draw_current<D>(&self, target: &mut D, origin: Point) -> Result<(), D::Error>
+    pub fn draw_current_delta<D>(&self, target: &mut D, origin: Point) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = C>,
         RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
@@ -286,6 +288,106 @@ where
         } else {
             Ok(())
         }
+    }
+
+    pub fn draw_current_composited<D>(
+        &self,
+        target: &mut D,
+        origin: Point,
+        background: C,
+    ) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = C>,
+        RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
+    {
+        if self.frames.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(bounds) = self.canvas_bounds() {
+            target.fill_solid(&bounds.translate(origin), background)?;
+        }
+
+        for (frame_index, frame) in self.frames.iter().enumerate().take(self.index + 1) {
+            if frame_index != self.index && frame.disposal_method() == DisposalMethod::Previous {
+                continue;
+            }
+
+            Self::draw_frame(target, origin, frame)?;
+
+            if frame_index != self.index {
+                Self::dispose_frame(target, origin, background, frame)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn draw_frame<D>(
+        target: &mut D,
+        origin: Point,
+        frame: &RawGifFrame<C, BO>,
+    ) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = C>,
+        RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
+    {
+        Image::new(frame.image(), origin + frame.top_left()).draw(target)
+    }
+
+    fn dispose_frame<D>(
+        target: &mut D,
+        origin: Point,
+        background: C,
+        frame: &RawGifFrame<C, BO>,
+    ) -> Result<(), D::Error>
+    where
+        D: DrawTarget<Color = C>,
+    {
+        match frame.disposal_method() {
+            DisposalMethod::Any | DisposalMethod::Keep => Ok(()),
+            DisposalMethod::Background => {
+                target.fill_solid(&frame.bounding_box().translate(origin), background)
+            }
+            DisposalMethod::Previous => Ok(()),
+        }
+    }
+
+    fn canvas_bounds(&self) -> Option<Rectangle> {
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+
+        for frame in self.frames {
+            let frame_bounds = frame.bounding_box();
+            min_x = min_x.min(frame_bounds.top_left.x);
+            min_y = min_y.min(frame_bounds.top_left.y);
+            max_x = max_x.max(frame_bounds.top_left.x + frame_bounds.size.width as i32);
+            max_y = max_y.max(frame_bounds.top_left.y + frame_bounds.size.height as i32);
+        }
+
+        if min_x == i32::MAX {
+            None
+        } else {
+            Some(Rectangle::new(
+                Point::new(min_x, min_y),
+                embedded_graphics::geometry::Size::new(
+                    (max_x - min_x) as u32,
+                    (max_y - min_y) as u32,
+                ),
+            ))
+        }
+    }
+}
+
+impl<C, BO> RawGifFrame<C, BO>
+where
+    C: PixelColor + From<C::Raw> + 'static,
+    BO: ByteOrder + 'static,
+{
+    pub fn bounding_box(&self) -> Rectangle {
+        Rectangle::new(self.top_left, self.image.size())
     }
 }
 
