@@ -3,7 +3,7 @@ use quote::quote;
 use syn::{
     parse::{Parse, ParseStream},
     spanned::Spanned,
-    GenericArgument, Ident, LitBool, LitStr, PathArguments, Token, Type, TypePath,
+    Ident, LitBool, LitStr, Token, TypePath,
 };
 
 pub(crate) struct IncludeGifInput {
@@ -14,6 +14,7 @@ pub(crate) struct IncludeGifInput {
 #[derive(Copy, Clone)]
 pub(crate) struct IncludeGifOptions {
     pub(crate) pixel_format: PixelFormat,
+    pub(crate) color: Option<PaletteColor>,
     pub(crate) dither: Dither,
 }
 
@@ -21,6 +22,7 @@ impl Default for IncludeGifOptions {
     fn default() -> Self {
         Self {
             pixel_format: PixelFormat::Rgb888,
+            color: None,
             dither: Dither::None,
         }
     }
@@ -31,41 +33,22 @@ pub(crate) enum PixelFormat {
     Rgb888,
     Rgb565,
     BinaryColor,
-    PaletteIndex1(PaletteColor),
-    PaletteIndex2(PaletteColor),
-    PaletteIndex4(PaletteColor),
-    PaletteIndex8(PaletteColor),
 }
 
 impl PixelFormat {
-    pub(crate) fn is_indexed(self) -> bool {
-        matches!(
-            self,
-            Self::PaletteIndex1(_)
-                | Self::PaletteIndex2(_)
-                | Self::PaletteIndex4(_)
-                | Self::PaletteIndex8(_)
-        )
+    pub(crate) fn palette_color(self) -> PaletteColor {
+        match self {
+            Self::Rgb888 => PaletteColor::Rgb888,
+            Self::Rgb565 => PaletteColor::Rgb565,
+            Self::BinaryColor => PaletteColor::BinaryColor,
+        }
     }
 
     pub(crate) fn bits_per_pixel(self) -> u8 {
         match self {
             Self::Rgb888 => 24,
             Self::Rgb565 => 16,
-            Self::BinaryColor | Self::PaletteIndex1(_) => 1,
-            Self::PaletteIndex2(_) => 2,
-            Self::PaletteIndex4(_) => 4,
-            Self::PaletteIndex8(_) => 8,
-        }
-    }
-
-    pub(crate) fn palette_color(self) -> Option<PaletteColor> {
-        match self {
-            Self::PaletteIndex1(color)
-            | Self::PaletteIndex2(color)
-            | Self::PaletteIndex4(color)
-            | Self::PaletteIndex8(color) => Some(color),
-            _ => None,
+            Self::BinaryColor => 1,
         }
     }
 
@@ -80,22 +63,6 @@ impl PixelFormat {
             Self::Rgb565 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb565),
             Self::BinaryColor => {
                 quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor)
-            }
-            Self::PaletteIndex1(color) => {
-                let color = color.color_type(embedded_gif);
-                quote!(#embedded_gif::PaletteIndex1<#color>)
-            }
-            Self::PaletteIndex2(color) => {
-                let color = color.color_type(embedded_gif);
-                quote!(#embedded_gif::PaletteIndex2<#color>)
-            }
-            Self::PaletteIndex4(color) => {
-                let color = color.color_type(embedded_gif);
-                quote!(#embedded_gif::PaletteIndex4<#color>)
-            }
-            Self::PaletteIndex8(color) => {
-                let color = color.color_type(embedded_gif);
-                quote!(#embedded_gif::PaletteIndex8<#color>)
             }
         }
     }
@@ -173,11 +140,12 @@ impl Parse for IncludeGifInput {
 
             match key_ident.to_string().as_str() {
                 "pixel_format" => options.pixel_format = parse_pixel_format(value)?,
+                "color" => options.color = Some(parse_palette_color_option(value)?),
                 "dither" => options.dither = parse_dither(value)?,
                 _ => {
                     return Err(syn::Error::new(
                         key_ident.span(),
-                        "supported options are `pixel_format` and `dither`",
+                        "supported options are `pixel_format`, `color`, and `dither`",
                     ));
                 }
             }
@@ -217,41 +185,22 @@ fn parse_pixel_format(value: OptionValue) -> syn::Result<PixelFormat> {
         "Rgb888" => Ok(PixelFormat::Rgb888),
         "Rgb565" => Ok(PixelFormat::Rgb565),
         "BinaryColor" => Ok(PixelFormat::BinaryColor),
-        "PaletteIndex1" => Ok(PixelFormat::PaletteIndex1(parse_palette_color(
-            &segment.arguments,
-        )?)),
-        "PaletteIndex2" => Ok(PixelFormat::PaletteIndex2(parse_palette_color(
-            &segment.arguments,
-        )?)),
-        "PaletteIndex4" => Ok(PixelFormat::PaletteIndex4(parse_palette_color(
-            &segment.arguments,
-        )?)),
-        "PaletteIndex8" => Ok(PixelFormat::PaletteIndex8(parse_palette_color(
-            &segment.arguments,
-        )?)),
         _ => Err(syn::Error::new(
             segment.ident.span(),
-            "supported pixel formats are `Rgb888`, `Rgb565`, `BinaryColor`, `PaletteIndex1`, `PaletteIndex2`, `PaletteIndex4`, and `PaletteIndex8`",
+            "supported pixel formats are `Rgb888`, `Rgb565`, and `BinaryColor`",
         )),
     }
 }
 
-fn parse_palette_color(arguments: &PathArguments) -> syn::Result<PaletteColor> {
-    let PathArguments::AngleBracketed(arguments) = arguments else {
+fn parse_palette_color_option(value: OptionValue) -> syn::Result<PaletteColor> {
+    let OptionValue::Type(value) = value else {
         return Err(syn::Error::new(
             Span::call_site(),
-            "palette index formats require a color parameter, for example `PaletteIndex4<Rgb565>`",
+            "`color` expects `Rgb888`, `Rgb565`, or `BinaryColor`",
         ));
     };
-
-    let Some(GenericArgument::Type(Type::Path(color))) = arguments.args.first() else {
-        return Err(syn::Error::new(
-            arguments.span(),
-            "palette index color parameter expects `Rgb888`, `Rgb565`, or `BinaryColor`",
-        ));
-    };
-    let Some(segment) = color.path.segments.last() else {
-        return Err(syn::Error::new(color.path.span(), "invalid palette color"));
+    let Some(segment) = value.path.segments.last() else {
+        return Err(syn::Error::new(value.path.span(), "invalid palette color"));
     };
 
     match segment.ident.to_string().as_str() {

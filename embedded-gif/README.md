@@ -38,20 +38,22 @@ static BINARY: &[GifFrame<BinaryColor>] =
 ```
 
 Use `include_gif_indexed!` to preserve indexed GIF data and embed the source
-palette:
+palette. The macro scans the source GIF and automatically stores palette
+indices as 1, 2, 4, or 8 bits per pixel, depending on the largest index the GIF
+actually uses:
 
 ```rust
 use embedded_gif::embedded_graphics::pixelcolor::Rgb565;
-use embedded_gif::{include_gif_indexed, IndexedGif, PaletteIndex4};
+use embedded_gif::{include_gif_indexed, IndexedGif};
 
-static INDEXED: IndexedGif<PaletteIndex4<Rgb565>, Rgb565> =
-    include_gif_indexed!("tests/fixtures/two_frames.gif", pixel_format = PaletteIndex4<Rgb565>);
+static INDEXED: IndexedGif<Rgb565> =
+    include_gif_indexed!("tests/fixtures/two_frames.gif", color = Rgb565);
 ```
 
 Direct `pixel_format` values are `Rgb888`, `Rgb565`, and `BinaryColor`.
 `BinaryColor` can use Floyd-Steinberg dithering with `dither = true` or
-`dither = FloydSteinberg`. Indexed `pixel_format` values are `PaletteIndex1`,
-`PaletteIndex2`, `PaletteIndex4`, and `PaletteIndex8`; they require
-`include_gif_indexed!` so the palette is included in the generated value.
+`dither = FloydSteinberg`. Indexed output uses `color = Rgb888`,
+`color = Rgb565`, or `color = BinaryColor` to choose the palette's target color
+type.
 
 Macro paths are resolved relative to the calling crate's `CARGO_MANIFEST_DIR`.

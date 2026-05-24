@@ -9,10 +9,6 @@ pub(crate) fn encode_frame(
     height: u32,
     options: IncludeGifOptions,
 ) -> Result<Vec<u8>, String> {
-    if options.pixel_format.is_indexed() {
-        return Err("indexed pixel formats require include_gif_indexed!".to_owned());
-    }
-
     let binary_pixels = if matches!(options.pixel_format, PixelFormat::BinaryColor)
         && options.dither == Dither::FloydSteinberg
     {
@@ -37,14 +33,14 @@ pub(crate) fn encode_frame(
         )));
     }
 
-    Ok(Encoder::new(options.pixel_format).encode(&symbols))
+    Ok(Encoder::new(PixelData::Color(options.pixel_format)).encode(&symbols))
 }
 
 pub(crate) fn encode_indexed_frame(
     indices: &[u8],
     transparent: Option<u8>,
-    pixel_format: PixelFormat,
-) -> Vec<u8> {
+    bit_depth: IndexBitDepth,
+) -> Result<Vec<u8>, String> {
     let symbols = indices
         .iter()
         .copied()
@@ -57,18 +53,61 @@ pub(crate) fn encode_indexed_frame(
         })
         .collect::<Vec<_>>();
 
-    Encoder::new(pixel_format).encode(&symbols)
+    Ok(Encoder::new(PixelData::Index(bit_depth)).encode(&symbols))
+}
+
+#[derive(Copy, Clone)]
+pub(crate) enum IndexBitDepth {
+    One,
+    Two,
+    Four,
+    Eight,
+}
+
+impl IndexBitDepth {
+    pub(crate) fn for_max_index(max_index: u8) -> Self {
+        match max_index {
+            0..=1 => Self::One,
+            2..=3 => Self::Two,
+            4..=15 => Self::Four,
+            _ => Self::Eight,
+        }
+    }
+
+    fn bits(self) -> u8 {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+            Self::Four => 4,
+            Self::Eight => 8,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+enum PixelData {
+    Color(PixelFormat),
+    Index(IndexBitDepth),
+}
+
+impl PixelData {
+    fn bits_per_pixel(self) -> u8 {
+        match self {
+            Self::Color(pixel_format) => pixel_format.bits_per_pixel(),
+            Self::Index(bit_depth) => bit_depth.bits(),
+        }
+    }
 }
 
 struct Encoder {
-    pixel_format: PixelFormat,
+    pixel_data: PixelData,
     data: Vec<u8>,
 }
 
 impl Encoder {
-    fn new(pixel_format: PixelFormat) -> Self {
+    fn new(pixel_data: PixelData) -> Self {
         Self {
-            pixel_format,
+            pixel_data,
             data: Vec::new(),
         }
     }
@@ -118,10 +157,10 @@ impl Encoder {
     }
 
     fn push_repeat(&mut self, color: Color, len: usize) {
-        let pixel_format = self.pixel_format;
+        let pixel_data = self.pixel_data;
         self.push_chunks(TOKEN_REPEAT, 64, len, |data| {
             let mut bits = Bits::default();
-            color.push(data, &mut bits, pixel_format);
+            color.push(data, &mut bits, pixel_data);
         });
     }
 
@@ -137,7 +176,7 @@ impl Encoder {
                 let Symbol::Opaque(color) = *symbol else {
                     unreachable!("raw chunks can only contain opaque pixels");
                 };
-                color.push(&mut self.data, &mut bits, self.pixel_format);
+                color.push(&mut self.data, &mut bits, self.pixel_data);
             }
 
             offset += chunk;
@@ -187,31 +226,23 @@ impl Color {
             PixelFormat::BinaryColor => {
                 Self::Binary(binary.unwrap_or_else(|| luminance(red, green, blue) >= 128))
             }
-            PixelFormat::PaletteIndex1(_)
-            | PixelFormat::PaletteIndex2(_)
-            | PixelFormat::PaletteIndex4(_)
-            | PixelFormat::PaletteIndex8(_) => Self::Index(palette_index(
-                luminance(red, green, blue),
-                pixel_format.bits_per_pixel(),
-            )),
         }
     }
 
-    fn push(self, data: &mut Vec<u8>, bits: &mut Bits, pixel_format: PixelFormat) {
-        match (pixel_format, self) {
-            (PixelFormat::Rgb888, Self::Rgb(red, green, blue)) => {
+    fn push(self, data: &mut Vec<u8>, bits: &mut Bits, pixel_data: PixelData) {
+        match (pixel_data, self) {
+            (PixelData::Color(PixelFormat::Rgb888), Self::Rgb(red, green, blue)) => {
                 data.extend_from_slice(&[red, green, blue]);
             }
-            (PixelFormat::Rgb565, Self::Rgb(red, green, blue)) => {
+            (PixelData::Color(PixelFormat::Rgb565), Self::Rgb(red, green, blue)) => {
                 let value = (u16::from(red) << 11) | (u16::from(green) << 5) | u16::from(blue);
                 data.extend_from_slice(&value.to_be_bytes());
             }
-            (PixelFormat::BinaryColor, Self::Binary(value)) => bits.push(data, u8::from(value), 1),
-            (PixelFormat::PaletteIndex1(_), Self::Index(value))
-            | (PixelFormat::PaletteIndex2(_), Self::Index(value))
-            | (PixelFormat::PaletteIndex4(_), Self::Index(value))
-            | (PixelFormat::PaletteIndex8(_), Self::Index(value)) => {
-                bits.push(data, value, pixel_format.bits_per_pixel());
+            (PixelData::Color(PixelFormat::BinaryColor), Self::Binary(value)) => {
+                bits.push(data, u8::from(value), 1)
+            }
+            (PixelData::Index(_), Self::Index(value)) => {
+                bits.push(data, value, pixel_data.bits_per_pixel())
             }
             _ => unreachable!("pixel format and quantized color mismatch"),
         }
@@ -285,11 +316,6 @@ fn raw_until_repeat(symbols: &[Symbol]) -> usize {
     }
 
     len
-}
-
-fn palette_index(luminance: i16, bits_per_pixel: u8) -> u8 {
-    let max = (1u16 << bits_per_pixel) - 1;
-    ((luminance.clamp(0, 255) as u16 * max + 127) / 255) as u8
 }
 
 fn luminance(red: u8, green: u8, blue: u8) -> i16 {
