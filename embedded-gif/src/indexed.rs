@@ -200,13 +200,8 @@ where
             return Ok(());
         }
 
-        if self.composited_index == self.previous_index() {
-            if let Some(previous) = self
-                .composited_index
-                .and_then(|index| self.frames.get(index))
-            {
-                Self::dispose_frame(target, origin, background, previous)?;
-            }
+        if let Some(previous) = self.incremental_previous_frame() {
+            Self::dispose_frame(target, origin, background, previous)?;
 
             if let Some(frame) = self.current_frame() {
                 crate::rle::draw_indexed_frame(target, frame, self.palette, origin)?;
@@ -241,6 +236,21 @@ where
             0 => None,
             _ if self.index == 0 => Some(self.frames.len() - 1),
             _ => Some(self.index - 1),
+        }
+    }
+
+    fn incremental_previous_frame(&self) -> Option<&IndexedFrame> {
+        let previous_index = self.previous_index()?;
+
+        if self.composited_index != Some(previous_index) {
+            return None;
+        }
+
+        let previous = self.frames.get(previous_index)?;
+        if previous.disposal_method() == DisposalMethod::Previous {
+            None
+        } else {
+            Some(previous)
         }
     }
 

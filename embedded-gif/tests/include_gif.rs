@@ -97,6 +97,57 @@ fn draws_dynamically_packed_palette_indices() {
 }
 
 #[test]
+fn draws_local_frame_offsets_after_transparent_skip() {
+    static DATA: &[u8] = &[0x04, 0xc0, 0xff, 0x00, 0x00];
+    static FRAMES: &[GifFrame] = &[GifFrame::new(
+        DATA,
+        Size::new(3, 2),
+        Point::new(2, 1),
+        10,
+        DisposalMethod::Any,
+    )];
+    let animation = Gif::new(FRAMES);
+    let mut target = PixelTarget::new(Size::new(6, 4));
+
+    animation
+        .draw_current_delta(&mut target, Point::zero())
+        .unwrap();
+
+    assert_eq!(
+        target.pixels.as_slice(),
+        &[Pixel(
+            Point::new(4, 2),
+            embedded_gif::embedded_graphics::pixelcolor::Rgb888::RED
+        )]
+    );
+}
+
+#[test]
+fn draws_indexed_local_frame_offsets_after_transparent_skip() {
+    static DATA: &[u8] = &[0x04, 0xc0, 0x40];
+    static FRAMES: &[IndexedFrame] = &[IndexedFrame::new(
+        DATA,
+        Size::new(3, 2),
+        Point::new(2, 1),
+        10,
+        DisposalMethod::Any,
+        IndexBitDepth::Two,
+    )];
+    static PALETTE: &[Rgb565] = &[Rgb565::BLACK, Rgb565::RED];
+    let animation = IndexedGif::new(FRAMES, PALETTE);
+    let mut target = PixelTarget::<Rgb565>::new(Size::new(6, 4));
+
+    animation
+        .draw_current_delta(&mut target, Point::zero())
+        .unwrap();
+
+    assert_eq!(
+        target.pixels.as_slice(),
+        &[Pixel(Point::new(4, 2), Rgb565::RED)]
+    );
+}
+
+#[test]
 fn indexed_composited_drawing_disposes_background() {
     static FRAME0_DATA: &[u8] = &[0xc1, 0x40];
     static FRAME1_DATA: &[u8] = &[0xc0, 0x80];
@@ -140,6 +191,108 @@ fn indexed_composited_drawing_disposes_background() {
             Pixel(Point::new(0, 0), Rgb565::BLACK),
             Pixel(Point::new(1, 0), Rgb565::BLACK),
             Pixel(Point::new(0, 0), Rgb565::GREEN),
+        ]
+    );
+}
+
+#[test]
+fn composited_drawing_replays_after_previous_disposal() {
+    static FRAME0_DATA: &[u8] = &[0xc0, 0xff, 0x00, 0x00];
+    static FRAME1_DATA: &[u8] = &[0xc0, 0x00, 0xff, 0x00];
+    static FRAME2_DATA: &[u8] = &[0xc0, 0x00, 0x00, 0xff];
+    static FRAMES: &[GifFrame] = &[
+        GifFrame::new(
+            FRAME0_DATA,
+            Size::new(1, 1),
+            Point::new(0, 0),
+            10,
+            DisposalMethod::Keep,
+        ),
+        GifFrame::new(
+            FRAME1_DATA,
+            Size::new(1, 1),
+            Point::new(2, 0),
+            10,
+            DisposalMethod::Previous,
+        ),
+        GifFrame::new(
+            FRAME2_DATA,
+            Size::new(1, 1),
+            Point::new(1, 0),
+            10,
+            DisposalMethod::Keep,
+        ),
+    ];
+    let mut animation = Gif::new(FRAMES);
+    let mut target = PixelTarget::new(Size::new(3, 1));
+
+    animation
+        .draw_current_composited(
+            &mut target,
+            Point::zero(),
+            embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK,
+        )
+        .unwrap();
+    animation.advance();
+    animation
+        .draw_current_composited(
+            &mut target,
+            Point::zero(),
+            embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK,
+        )
+        .unwrap();
+    animation.advance();
+    animation
+        .draw_current_composited(
+            &mut target,
+            Point::zero(),
+            embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK,
+        )
+        .unwrap();
+
+    assert_eq!(
+        target.pixels.as_slice(),
+        &[
+            Pixel(
+                Point::new(0, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(1, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(2, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(0, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::RED
+            ),
+            Pixel(
+                Point::new(2, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::GREEN
+            ),
+            Pixel(
+                Point::new(0, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(1, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(2, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(0, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::RED
+            ),
+            Pixel(
+                Point::new(1, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLUE
+            ),
         ]
     );
 }
