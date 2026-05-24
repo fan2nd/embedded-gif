@@ -196,6 +196,134 @@ fn indexed_composited_drawing_disposes_background() {
 }
 
 #[test]
+fn composited_drawing_replays_when_origin_changes() {
+    static FRAME0_DATA: &[u8] = &[0xc0, 0xff, 0x00, 0x00];
+    static FRAME1_DATA: &[u8] = &[0xc0, 0x00, 0xff, 0x00];
+    static FRAMES: &[GifFrame] = &[
+        GifFrame::new(
+            FRAME0_DATA,
+            Size::new(1, 1),
+            Point::new(0, 0),
+            10,
+            DisposalMethod::Keep,
+        ),
+        GifFrame::new(
+            FRAME1_DATA,
+            Size::new(1, 1),
+            Point::new(1, 0),
+            10,
+            DisposalMethod::Keep,
+        ),
+    ];
+    let mut animation = Gif::new(FRAMES);
+    let mut target = PixelTarget::new(Size::new(4, 1));
+
+    animation
+        .draw_current_composited(
+            &mut target,
+            Point::zero(),
+            embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK,
+        )
+        .unwrap();
+    animation.advance();
+    animation
+        .draw_current_composited(
+            &mut target,
+            Point::new(1, 0),
+            embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK,
+        )
+        .unwrap();
+
+    assert_eq!(
+        target.pixels.as_slice(),
+        &[
+            Pixel(
+                Point::new(0, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(1, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(0, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::RED
+            ),
+            Pixel(
+                Point::new(1, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(2, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::BLACK
+            ),
+            Pixel(
+                Point::new(1, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::RED
+            ),
+            Pixel(
+                Point::new(2, 0),
+                embedded_gif::embedded_graphics::pixelcolor::Rgb888::GREEN
+            ),
+        ]
+    );
+}
+
+#[test]
+fn indexed_composited_drawing_replays_when_wrapping_to_first_frame() {
+    static FRAME0_DATA: &[u8] = &[0xc1, 0x40];
+    static FRAME1_DATA: &[u8] = &[0xc0, 0x80];
+    static FRAMES: &[IndexedFrame] = &[
+        IndexedFrame::new(
+            FRAME0_DATA,
+            Size::new(2, 1),
+            Point::zero(),
+            10,
+            DisposalMethod::Keep,
+            IndexBitDepth::Two,
+        ),
+        IndexedFrame::new(
+            FRAME1_DATA,
+            Size::new(1, 1),
+            Point::new(1, 0),
+            10,
+            DisposalMethod::Keep,
+            IndexBitDepth::Two,
+        ),
+    ];
+    static PALETTE: &[Rgb565] = &[Rgb565::BLACK, Rgb565::RED, Rgb565::GREEN];
+    let mut animation = IndexedGif::new(FRAMES, PALETTE);
+    let mut target = PixelTarget::<Rgb565>::new(Size::new(2, 1));
+
+    animation
+        .draw_current_composited(&mut target, Point::zero(), Rgb565::BLACK)
+        .unwrap();
+    animation.advance();
+    animation
+        .draw_current_composited(&mut target, Point::zero(), Rgb565::BLACK)
+        .unwrap();
+    animation.advance();
+    animation
+        .draw_current_composited(&mut target, Point::zero(), Rgb565::BLACK)
+        .unwrap();
+
+    assert_eq!(
+        target.pixels.as_slice(),
+        &[
+            Pixel(Point::new(0, 0), Rgb565::BLACK),
+            Pixel(Point::new(1, 0), Rgb565::BLACK),
+            Pixel(Point::new(0, 0), Rgb565::RED),
+            Pixel(Point::new(1, 0), Rgb565::RED),
+            Pixel(Point::new(1, 0), Rgb565::GREEN),
+            Pixel(Point::new(0, 0), Rgb565::BLACK),
+            Pixel(Point::new(1, 0), Rgb565::BLACK),
+            Pixel(Point::new(0, 0), Rgb565::RED),
+            Pixel(Point::new(1, 0), Rgb565::RED),
+        ]
+    );
+}
+
+#[test]
 fn composited_drawing_replays_after_previous_disposal() {
     static FRAME0_DATA: &[u8] = &[0xc0, 0xff, 0x00, 0x00];
     static FRAME1_DATA: &[u8] = &[0xc0, 0x00, 0xff, 0x00];

@@ -98,6 +98,7 @@ where
     index: usize,
     elapsed_millis: u32,
     composited_index: Option<usize>,
+    composited_origin: Option<Point>,
 }
 
 impl<C> IndexedGif<C>
@@ -111,6 +112,7 @@ where
             index: 0,
             elapsed_millis: 0,
             composited_index: None,
+            composited_origin: None,
         }
     }
 
@@ -142,6 +144,7 @@ where
         self.index = 0;
         self.elapsed_millis = 0;
         self.composited_index = None;
+        self.composited_origin = None;
     }
 
     pub fn advance(&mut self) -> Option<&IndexedFrame> {
@@ -200,7 +203,7 @@ where
             return Ok(());
         }
 
-        if let Some(previous) = self.incremental_previous_frame() {
+        if let Some(previous) = self.incremental_previous_frame(origin) {
             Self::dispose_frame(target, origin, background, previous)?;
 
             if let Some(frame) = self.current_frame() {
@@ -208,6 +211,7 @@ where
             }
 
             self.composited_index = Some(self.index);
+            self.composited_origin = Some(origin);
             return Ok(());
         }
 
@@ -228,6 +232,7 @@ where
         }
 
         self.composited_index = Some(self.index);
+        self.composited_origin = Some(origin);
         Ok(())
     }
 
@@ -239,7 +244,11 @@ where
         }
     }
 
-    fn incremental_previous_frame(&self) -> Option<&IndexedFrame> {
+    fn incremental_previous_frame(&self, origin: Point) -> Option<&IndexedFrame> {
+        if self.index == 0 || self.composited_origin != Some(origin) {
+            return None;
+        }
+
         let previous_index = self.previous_index()?;
 
         if self.composited_index != Some(previous_index) {
