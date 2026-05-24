@@ -6,31 +6,31 @@ use embedded_gif::embedded_graphics::{
     Pixel,
 };
 use embedded_gif::{
-    include_gif, DisposalMethod, Gif, GifFrame, PaletteIndex1, PaletteIndex2, PaletteIndex4,
+    include_gif_frames, DisposalMethod, Gif, GifFrame, PaletteIndex1, PaletteIndex2, PaletteIndex4,
     PaletteIndex8,
 };
 
-static FRAMES: &[GifFrame] = include_gif!("tests/fixtures/two_frames.gif");
+static FRAMES: &[GifFrame] = include_gif_frames!("tests/fixtures/two_frames.gif");
 static RGB565_FRAMES: &[GifFrame<Rgb565>] =
-    include_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
-static BINARY_FRAMES: &[GifFrame<BinaryColor>] = include_gif!(
+    include_gif_frames!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
+static BINARY_FRAMES: &[GifFrame<BinaryColor>] = include_gif_frames!(
     "tests/fixtures/two_frames.gif",
     pixel_format = BinaryColor,
     dither = true
 );
-static PALETTE1_FRAMES: &[GifFrame<PaletteIndex1<Rgb565>>] = include_gif!(
+static PALETTE1_FRAMES: &[GifFrame<PaletteIndex1<Rgb565>>] = include_gif_frames!(
     "tests/fixtures/two_frames.gif",
     pixel_format = PaletteIndex1<Rgb565>
 );
-static PALETTE2_FRAMES: &[GifFrame<PaletteIndex2<Rgb565>>] = include_gif!(
+static PALETTE2_FRAMES: &[GifFrame<PaletteIndex2<Rgb565>>] = include_gif_frames!(
     "tests/fixtures/two_frames.gif",
     pixel_format = PaletteIndex2<Rgb565>
 );
-static PALETTE4_FRAMES: &[GifFrame<PaletteIndex4<Rgb565>>] = include_gif!(
+static PALETTE4_FRAMES: &[GifFrame<PaletteIndex4<Rgb565>>] = include_gif_frames!(
     "tests/fixtures/two_frames.gif",
     pixel_format = PaletteIndex4<Rgb565>
 );
-static PALETTE8_FRAMES: &[GifFrame<PaletteIndex8<Rgb565>>] = include_gif!(
+static PALETTE8_FRAMES: &[GifFrame<PaletteIndex8<Rgb565>>] = include_gif_frames!(
     "tests/fixtures/two_frames.gif",
     pixel_format = PaletteIndex8<Rgb565>
 );

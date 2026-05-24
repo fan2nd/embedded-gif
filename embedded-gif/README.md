@@ -5,15 +5,15 @@ Embed GIF assets for `embedded-graphics`.
 The public API is intentionally small:
 
 ```rust
-use embedded_gif::{include_gif, Gif, GifFrame};
+use embedded_gif::{include_gif_frames, Gif, GifFrame};
 
-static FRAMES: &[GifFrame] = include_gif!("tests/fixtures/two_frames.gif");
+static FRAMES: &[GifFrame] = include_gif_frames!("tests/fixtures/two_frames.gif");
 
 let mut animation = Gif::new(FRAMES);
 animation.tick_millis(100);
 ```
 
-`include_gif!` preserves raw GIF frame semantics. Each generated `GifFrame`
+`include_gif_frames!` preserves raw GIF frame semantics. Each generated `GifFrame`
 stores its frame-local size, top-left offset, delay, disposal method, and a
 mandatory compact RLE byte stream. Transparent pixels are encoded as skip tokens,
 so delta drawing keeps GIF transparency semantics without a separate alpha mask.
@@ -26,16 +26,16 @@ The macro supports pixel conversion and palette index output:
 
 ```rust
 use embedded_gif::embedded_graphics::pixelcolor::{BinaryColor, Rgb565};
-use embedded_gif::{include_gif, GifFrame, PaletteIndex4};
+use embedded_gif::{include_gif_frames, GifFrame, PaletteIndex4};
 
 static RGB565: &[GifFrame<Rgb565>] =
-    include_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
+    include_gif_frames!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
 
 static BINARY: &[GifFrame<BinaryColor>] =
-    include_gif!("tests/fixtures/two_frames.gif", pixel_format = BinaryColor, dither = true);
+    include_gif_frames!("tests/fixtures/two_frames.gif", pixel_format = BinaryColor, dither = true);
 
 static INDEXED: &[GifFrame<PaletteIndex4<Rgb565>>] =
-    include_gif!("tests/fixtures/two_frames.gif", pixel_format = PaletteIndex4<Rgb565>);
+    include_gif_frames!("tests/fixtures/two_frames.gif", pixel_format = PaletteIndex4<Rgb565>);
 ```
 
 Supported `pixel_format` values are `Rgb888`, `Rgb565`, `BinaryColor`,
