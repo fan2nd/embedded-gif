@@ -2,45 +2,68 @@ use embedded_gif::embedded_graphics::{
     pixelcolor::{BinaryColor, Rgb565},
     prelude::*,
 };
-use embedded_gif::{include_gif, GifAnimation, GifFrame};
+use embedded_gif::{
+    include_complete_gif, include_raw_gif, CompleteGif, CompleteGifFrame, DisposalMethod, RawGif,
+    RawGifFrame,
+};
 
-static FRAMES: &[GifFrame] = include_gif!("tests/fixtures/two_frames.gif");
-static RGB565_FRAMES: &[GifFrame<Rgb565>] =
-    include_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
-static BINARY_FRAMES: &[GifFrame<BinaryColor>] = include_gif!(
+static COMPLETE_FRAMES: &[CompleteGifFrame] =
+    include_complete_gif!("tests/fixtures/two_frames.gif");
+static COMPLETE_RGB565_FRAMES: &[CompleteGifFrame<Rgb565>] =
+    include_complete_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
+static COMPLETE_BINARY_FRAMES: &[CompleteGifFrame<BinaryColor>] = include_complete_gif!(
     "tests/fixtures/two_frames.gif",
     pixel_format = BinaryColor,
     dither = true
 );
+static RAW_FRAMES: &[RawGifFrame] = include_raw_gif!("tests/fixtures/two_frames.gif");
 
 #[test]
-fn embeds_each_gif_frame_as_rgb888_image_raw() {
-    assert_eq!(FRAMES.len(), 2);
-    assert_eq!(FRAMES[0].image().size(), Size::new(1, 1));
-    assert_eq!(FRAMES[1].image().size(), Size::new(1, 1));
-    assert_eq!(FRAMES[0].delay_centiseconds(), 10);
-    assert_eq!(FRAMES[1].delay_millis(), 100);
+fn embeds_complete_frames_as_canvas_sized_image_raw_values() {
+    assert_eq!(COMPLETE_FRAMES.len(), 2);
+    assert_eq!(COMPLETE_FRAMES[0].image().size(), Size::new(1, 1));
+    assert_eq!(COMPLETE_FRAMES[1].image().size(), Size::new(1, 1));
+    assert_eq!(COMPLETE_FRAMES[0].delay_centiseconds(), 10);
+    assert_eq!(COMPLETE_FRAMES[1].delay_millis(), 100);
 }
 
 #[test]
-fn embeds_selected_pixel_formats() {
-    assert_eq!(RGB565_FRAMES.len(), 2);
-    assert_eq!(RGB565_FRAMES[0].image().size(), Size::new(1, 1));
+fn embeds_complete_frames_in_selected_pixel_formats() {
+    assert_eq!(COMPLETE_RGB565_FRAMES.len(), 2);
+    assert_eq!(COMPLETE_RGB565_FRAMES[0].image().size(), Size::new(1, 1));
 
-    assert_eq!(BINARY_FRAMES.len(), 2);
-    assert_eq!(BINARY_FRAMES[0].image().size(), Size::new(1, 1));
+    assert_eq!(COMPLETE_BINARY_FRAMES.len(), 2);
+    assert_eq!(COMPLETE_BINARY_FRAMES[0].image().size(), Size::new(1, 1));
 }
 
 #[test]
-fn manages_current_frame_from_gif_delays() {
-    let mut animation = GifAnimation::new(FRAMES);
+fn embeds_raw_frames_with_gif_semantics() {
+    assert_eq!(RAW_FRAMES.len(), 2);
+    assert_eq!(RAW_FRAMES[0].image().size(), Size::new(1, 1));
+    assert_eq!(RAW_FRAMES[0].top_left(), Point::new(0, 0));
+    assert_eq!(RAW_FRAMES[0].disposal_method(), DisposalMethod::Any);
+}
+
+#[test]
+fn manages_complete_gif_timing() {
+    let mut animation = CompleteGif::new(COMPLETE_FRAMES);
 
     assert_eq!(animation.len(), 2);
     assert_eq!(animation.frame_index(), 0);
-    assert!(!animation.advance_by_millis(95));
+    assert!(!animation.tick_millis(95));
     assert_eq!(animation.frame_index(), 0);
-    assert!(animation.advance_by_millis(5));
+    assert!(animation.tick_millis(5));
     assert_eq!(animation.frame_index(), 1);
-    assert!(animation.advance_by_centiseconds(10));
+    assert!(animation.tick_centiseconds(10));
     assert_eq!(animation.frame_index(), 0);
+}
+
+#[test]
+fn manages_raw_gif_timing() {
+    let mut animation = RawGif::new(RAW_FRAMES);
+
+    assert_eq!(animation.len(), 2);
+    assert_eq!(animation.frame_index(), 0);
+    assert!(animation.tick_centiseconds(10));
+    assert_eq!(animation.frame_index(), 1);
 }

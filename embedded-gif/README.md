@@ -1,26 +1,40 @@
 # embedded-gif
 
-Embed GIF frames as static `embedded-graphics` `ImageRaw<Rgb888>` values.
+Embed GIF assets for `embedded-graphics`.
+
+There are two explicit modes:
 
 ```rust
-use embedded_gif::{include_gif, GifAnimation};
+use embedded_gif::{include_complete_gif, include_raw_gif, CompleteGif, CompleteGifFrame, RawGifFrame};
 
-static FRAMES: &[embedded_gif::GifFrame] = include_gif!("tests/fixtures/two_frames.gif");
-static RGB565_FRAMES: &[embedded_gif::GifFrame<embedded_gif::embedded_graphics::pixelcolor::Rgb565>] =
-    include_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
-static BINARY_FRAMES: &[embedded_gif::GifFrame<embedded_gif::embedded_graphics::pixelcolor::BinaryColor>] =
-    include_gif!("tests/fixtures/two_frames.gif", pixel_format = BinaryColor, dither = true);
+static COMPLETE: &[CompleteGifFrame] = include_complete_gif!("tests/fixtures/two_frames.gif");
+static RAW: &[RawGifFrame] = include_raw_gif!("tests/fixtures/two_frames.gif");
 
-let mut animation = GifAnimation::new(FRAMES);
-animation.advance_by_millis(100);
+let mut animation = CompleteGif::new(COMPLETE);
+animation.tick_millis(100);
 ```
 
-The `include_gif!` path is resolved relative to the calling crate's
-`CARGO_MANIFEST_DIR`. Each GIF frame is decoded to RGB888 data and returned with
-its GIF delay metadata. `GifAnimation` keeps the current frame index, advances by
-elapsed time, and can draw the current frame to an `embedded-graphics` draw
-target.
+`include_complete_gif!` composites GIF frames onto the logical canvas at compile
+time. Each generated frame is a full canvas-sized `ImageRaw`.
+
+`include_raw_gif!` preserves GIF frame semantics. Each generated frame keeps its
+own image, top-left offset, delay, and disposal method.
+
+Both macros support pixel conversion:
+
+```rust
+use embedded_gif::embedded_graphics::pixelcolor::{BinaryColor, Rgb565};
+use embedded_gif::{include_complete_gif, CompleteGifFrame};
+
+static RGB565: &[CompleteGifFrame<Rgb565>] =
+    include_complete_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
+
+static BINARY: &[CompleteGifFrame<BinaryColor>] =
+    include_complete_gif!("tests/fixtures/two_frames.gif", pixel_format = BinaryColor, dither = true);
+```
 
 Supported `pixel_format` values are `Rgb888`, `Rgb565`, and `BinaryColor`.
 `BinaryColor` can use Floyd-Steinberg dithering with `dither = true` or
 `dither = FloydSteinberg`.
+
+Macro paths are resolved relative to the calling crate's `CARGO_MANIFEST_DIR`.
