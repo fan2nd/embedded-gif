@@ -2,55 +2,37 @@
 
 Embed GIF assets for `embedded-graphics`.
 
-There are two explicit modes:
+The public API is intentionally small:
 
 ```rust
-use embedded_gif::{include_complete_gif, include_raw_gif, CompleteGif, CompleteGifFrame, RawGifFrame};
+use embedded_gif::{include_gif, Gif, GifFrame};
 
-static COMPLETE: &[CompleteGifFrame] = include_complete_gif!("tests/fixtures/two_frames.gif");
-static RAW: &[RawGifFrame] = include_raw_gif!("tests/fixtures/two_frames.gif");
+static FRAMES: &[GifFrame] = include_gif!("tests/fixtures/two_frames.gif");
 
-let mut animation = CompleteGif::new(COMPLETE);
+let mut animation = Gif::new(FRAMES);
 animation.tick_millis(100);
 ```
 
-`include_complete_gif!` composites GIF frames onto the logical canvas at compile
-time. Each generated frame is a full canvas-sized `ImageRaw` plus a 1bpp alpha
-mask, so transparent canvas pixels are skipped when drawing.
+`include_gif!` preserves raw GIF frame semantics. Each generated `GifFrame`
+stores its frame-local size, top-left offset, delay, disposal method, and a
+mandatory compact RLE byte stream. Transparent pixels are encoded as skip tokens,
+so delta drawing keeps GIF transparency semantics without a separate alpha mask.
 
-`include_raw_gif!` preserves GIF frame semantics. Each generated frame keeps its
-own image, 1bpp alpha mask, top-left offset, delay, and disposal method. Use
-`draw_current_delta` when the caller maintains the framebuffer and applies only
-the current diff. Use `draw_current_composited` when the caller wants raw storage
-but wants the library to replay raw frames and draw the complete current visual
-state.
+Use `draw_current_delta` when the caller owns the framebuffer and wants to draw
+only the current frame delta. Use `draw_current_composited` when the caller wants
+the library to replay raw frames and draw the complete current visual state.
 
-Raw GIFs can also use bytecode compression:
-
-```rust
-use embedded_gif::{include_raw_gif, RawGifCompressedFrame, RawCompressedGif};
-
-static RAW_COMPRESSED: &[RawGifCompressedFrame] =
-    include_raw_gif!("tests/fixtures/two_frames.gif", compression = Rle);
-
-let mut animation = RawCompressedGif::new(RAW_COMPRESSED);
-animation.tick_millis(100);
-```
-
-Compressed raw frames use a compact bytecode stream with skip, solid-color, and
-raw-pixel tokens instead of per-pixel image data plus an alpha mask.
-
-Both macros support pixel conversion:
+The macro supports pixel conversion:
 
 ```rust
 use embedded_gif::embedded_graphics::pixelcolor::{BinaryColor, Rgb565};
-use embedded_gif::{include_complete_gif, CompleteGifFrame};
+use embedded_gif::{include_gif, GifFrame};
 
-static RGB565: &[CompleteGifFrame<Rgb565>] =
-    include_complete_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
+static RGB565: &[GifFrame<Rgb565>] =
+    include_gif!("tests/fixtures/two_frames.gif", pixel_format = Rgb565);
 
-static BINARY: &[CompleteGifFrame<BinaryColor>] =
-    include_complete_gif!("tests/fixtures/two_frames.gif", pixel_format = BinaryColor, dither = true);
+static BINARY: &[GifFrame<BinaryColor>] =
+    include_gif!("tests/fixtures/two_frames.gif", pixel_format = BinaryColor, dither = true);
 ```
 
 Supported `pixel_format` values are `Rgb888`, `Rgb565`, and `BinaryColor`.

@@ -11,33 +11,15 @@ use syn::{
 };
 
 #[proc_macro]
-pub fn include_complete_gif(input: TokenStream) -> TokenStream {
+pub fn include_gif(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as IncludeGifInput);
 
-    match expand_include_gif(&input, GifMode::Complete) {
+    match expand_include_gif(&input) {
         Ok(tokens) => tokens.into(),
         Err(message) => syn::Error::new(input.path.span(), message)
             .to_compile_error()
             .into(),
     }
-}
-
-#[proc_macro]
-pub fn include_raw_gif(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as IncludeGifInput);
-
-    match expand_include_gif(&input, GifMode::Raw) {
-        Ok(tokens) => tokens.into(),
-        Err(message) => syn::Error::new(input.path.span(), message)
-            .to_compile_error()
-            .into(),
-    }
-}
-
-#[derive(Copy, Clone)]
-enum GifMode {
-    Complete,
-    Raw,
 }
 
 struct IncludeGifInput {
@@ -49,7 +31,6 @@ struct IncludeGifInput {
 struct IncludeGifOptions {
     pixel_format: PixelFormat,
     dither: Dither,
-    compression: Compression,
 }
 
 impl Default for IncludeGifOptions {
@@ -57,7 +38,6 @@ impl Default for IncludeGifOptions {
         Self {
             pixel_format: PixelFormat::Rgb888,
             dither: Dither::None,
-            compression: Compression::None,
         }
     }
 }
@@ -73,12 +53,6 @@ enum PixelFormat {
 enum Dither {
     None,
     FloydSteinberg,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-enum Compression {
-    None,
-    Rle,
 }
 
 impl Parse for IncludeGifInput {
@@ -101,11 +75,10 @@ impl Parse for IncludeGifInput {
             match key.as_str() {
                 "pixel_format" => options.pixel_format = parse_pixel_format(value)?,
                 "dither" => options.dither = parse_dither(value)?,
-                "compression" => options.compression = parse_compression(value)?,
                 _ => {
                     return Err(syn::Error::new(
                         key_ident.span(),
-                        "supported options are `pixel_format`, `dither`, and `compression`",
+                        "supported options are `pixel_format` and `dither`",
                     ));
                 }
             }
@@ -169,104 +142,13 @@ fn parse_dither(value: OptionValue) -> syn::Result<Dither> {
     }
 }
 
-fn parse_compression(value: OptionValue) -> syn::Result<Compression> {
-    let OptionValue::Ident(value) = value else {
-        return Err(syn::Error::new(
-            Span::call_site(),
-            "`compression` expects `None` or `Rle`",
-        ));
-    };
-
-    match value.to_string().as_str() {
-        "None" => Ok(Compression::None),
-        "Rle" => Ok(Compression::Rle),
-        _ => Err(syn::Error::new(
-            value.span(),
-            "supported compression values are `None` and `Rle`",
-        )),
-    }
-}
-
-fn expand_include_gif(input: &IncludeGifInput, mode: GifMode) -> Result<TokenStream2, String> {
+fn expand_include_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
     if input.options.dither != Dither::None
         && !matches!(input.options.pixel_format, PixelFormat::BinaryColor)
     {
         return Err("`dither` is only supported with `pixel_format = BinaryColor`".to_owned());
     }
 
-    if input.options.compression != Compression::None && !matches!(mode, GifMode::Raw) {
-        return Err("`compression` is only supported by `include_raw_gif!`".to_owned());
-    }
-
-    match mode {
-        GifMode::Complete => expand_complete_gif(input),
-        GifMode::Raw => expand_raw_gif(input),
-    }
-}
-
-fn expand_complete_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
-    let gif_path = manifest_relative_path(input.path.value())?;
-    let embedded_gif = crate_path()?;
-    let mut reader = open_gif(&gif_path)?;
-    let canvas_width = u32::from(reader.width());
-    let canvas_height = u32::from(reader.height());
-    let canvas_len = checked_rgba_len(canvas_width, canvas_height)?;
-    let mut canvas = vec![0; canvas_len];
-    let mut previous_canvas = canvas.clone();
-    let mut frame_tokens = Vec::new();
-    let mut frame_count = 0usize;
-
-    while let Some(frame) = reader
-        .read_next_frame()
-        .map_err(|error| format!("failed to read GIF frame: {error}"))?
-    {
-        previous_canvas.clone_from(&canvas);
-        overlay_frame(&mut canvas, canvas_width, canvas_height, frame)?;
-
-        let data_ident = format_ident!("__EMBEDDED_GIF_COMPLETE_FRAME_{frame_count}");
-        let mask_ident = format_ident!("__EMBEDDED_GIF_COMPLETE_MASK_{frame_count}");
-        let delay = frame.delay;
-        let bytes = convert_frame(&canvas, canvas_width, canvas_height, input.options)?;
-        let alpha_mask = alpha_mask(&canvas, canvas_width, canvas_height)?;
-        let color = color_type(&embedded_gif, input.options.pixel_format);
-
-        frame_tokens.push(quote! {
-            {
-                const #data_ident: &[u8] = &[#(#bytes),*];
-                const #mask_ident: &[u8] = &[#(#alpha_mask),*];
-                #embedded_gif::CompleteGifFrame::new(
-                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#data_ident, #canvas_width),
-                    #mask_ident,
-                    #delay,
-                )
-            }
-        });
-
-        dispose_frame(
-            &mut canvas,
-            &previous_canvas,
-            canvas_width,
-            canvas_height,
-            frame,
-        )?;
-        frame_count += 1;
-    }
-
-    ensure_frames(&gif_path, frame_count)?;
-
-    let frame_type = frame_type(
-        &embedded_gif,
-        "CompleteGifFrame",
-        input.options.pixel_format,
-    );
-    Ok(quote! {
-        &[
-            #(#frame_tokens),*
-        ] as &'static [#frame_type]
-    })
-}
-
-fn expand_raw_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
     let gif_path = manifest_relative_path(input.path.value())?;
     let embedded_gif = crate_path()?;
     let mut reader = open_gif(&gif_path)?;
@@ -283,60 +165,28 @@ fn expand_raw_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
         let top = i32::from(frame.top);
         let delay = frame.delay;
         let disposal = disposal_method(&embedded_gif, frame.dispose);
-        let color = color_type(&embedded_gif, input.options.pixel_format);
+        let data_ident = format_ident!("__EMBEDDED_GIF_FRAME_{frame_count}");
+        let data = rle_data(&frame.buffer, width, height, input.options)?;
 
-        match input.options.compression {
-            Compression::None => {
-                let data_ident = format_ident!("__EMBEDDED_GIF_RAW_FRAME_{frame_count}");
-                let mask_ident = format_ident!("__EMBEDDED_GIF_RAW_MASK_{frame_count}");
-                let bytes = convert_frame(&frame.buffer, width, height, input.options)?;
-                let alpha_mask = alpha_mask(&frame.buffer, width, height)?;
-
-                frame_tokens.push(quote! {
-                    {
-                        const #data_ident: &[u8] = &[#(#bytes),*];
-                        const #mask_ident: &[u8] = &[#(#alpha_mask),*];
-                        #embedded_gif::RawGifFrame::new(
-                            #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#data_ident, #width),
-                            #mask_ident,
-                            #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
-                            #delay,
-                            #disposal,
-                        )
-                    }
-                });
+        frame_tokens.push(quote! {
+            {
+                const #data_ident: &[u8] = &[#(#data),*];
+                #embedded_gif::GifFrame::new(
+                    #data_ident,
+                    #embedded_gif::embedded_graphics::geometry::Size::new(#width, #height),
+                    #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
+                    #delay,
+                    #disposal,
+                )
             }
-            Compression::Rle => {
-                let data_ident = format_ident!("__EMBEDDED_GIF_RAW_COMPRESSED_{frame_count}");
-                let data = compressed_data(&frame.buffer, width, height, input.options)?;
+        });
 
-                frame_tokens.push(quote! {
-                    {
-                        const #data_ident: &[u8] = &[#(#data),*];
-                        #embedded_gif::RawGifCompressedFrame::new(
-                            #data_ident,
-                            #embedded_gif::embedded_graphics::geometry::Size::new(#width, #height),
-                            #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
-                            #delay,
-                            #disposal,
-                        )
-                    }
-                });
-            }
-        }
         frame_count += 1;
     }
 
     ensure_frames(&gif_path, frame_count)?;
 
-    let frame_type = match input.options.compression {
-        Compression::None => frame_type(&embedded_gif, "RawGifFrame", input.options.pixel_format),
-        Compression::Rle => frame_type(
-            &embedded_gif,
-            "RawGifCompressedFrame",
-            input.options.pixel_format,
-        ),
-    };
+    let frame_type = frame_type(&embedded_gif, input.options.pixel_format);
     Ok(quote! {
         &[
             #(#frame_tokens),*
@@ -366,123 +216,6 @@ fn ensure_frames(gif_path: &PathBuf, frame_count: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_rgba_len(width: u32, height: u32) -> Result<usize, String> {
-    let pixels = width
-        .checked_mul(height)
-        .ok_or_else(|| "GIF canvas dimensions are too large".to_owned())?;
-    let bytes = pixels
-        .checked_mul(4)
-        .ok_or_else(|| "GIF canvas is too large".to_owned())?;
-
-    usize::try_from(bytes).map_err(|_| "GIF canvas is too large".to_owned())
-}
-
-fn overlay_frame(
-    canvas: &mut [u8],
-    canvas_width: u32,
-    canvas_height: u32,
-    frame: &gif::Frame<'_>,
-) -> Result<(), String> {
-    let frame_width = u32::from(frame.width);
-    let frame_height = u32::from(frame.height);
-    let frame_left = u32::from(frame.left);
-    let frame_top = u32::from(frame.top);
-
-    ensure_frame_bounds(
-        frame_left,
-        frame_top,
-        frame_width,
-        frame_height,
-        canvas_width,
-        canvas_height,
-        "GIF frame lies outside the logical canvas",
-    )?;
-
-    for y in 0..frame_height {
-        for x in 0..frame_width {
-            let source = ((y * frame_width + x) * 4) as usize;
-            if frame.buffer[source + 3] == 0 {
-                continue;
-            }
-
-            let target = (((frame_top + y) * canvas_width + frame_left + x) * 4) as usize;
-            canvas[target..target + 4].copy_from_slice(&frame.buffer[source..source + 4]);
-        }
-    }
-
-    Ok(())
-}
-
-fn dispose_frame(
-    canvas: &mut [u8],
-    previous_canvas: &[u8],
-    canvas_width: u32,
-    canvas_height: u32,
-    frame: &gif::Frame<'_>,
-) -> Result<(), String> {
-    match frame.dispose {
-        GifDisposalMethod::Any | GifDisposalMethod::Keep => {}
-        GifDisposalMethod::Background => {
-            clear_frame_area(canvas, canvas_width, canvas_height, frame)?;
-        }
-        GifDisposalMethod::Previous => canvas.copy_from_slice(previous_canvas),
-    }
-
-    Ok(())
-}
-
-fn clear_frame_area(
-    canvas: &mut [u8],
-    canvas_width: u32,
-    canvas_height: u32,
-    frame: &gif::Frame<'_>,
-) -> Result<(), String> {
-    let frame_width = u32::from(frame.width);
-    let frame_height = u32::from(frame.height);
-    let frame_left = u32::from(frame.left);
-    let frame_top = u32::from(frame.top);
-
-    ensure_frame_bounds(
-        frame_left,
-        frame_top,
-        frame_width,
-        frame_height,
-        canvas_width,
-        canvas_height,
-        "GIF frame disposal area lies outside the logical canvas",
-    )?;
-
-    for y in frame_top..frame_top + frame_height {
-        let row_start = ((y * canvas_width + frame_left) * 4) as usize;
-        let row_end = row_start + (frame_width as usize * 4);
-        canvas[row_start..row_end].fill(0);
-    }
-
-    Ok(())
-}
-
-fn ensure_frame_bounds(
-    left: u32,
-    top: u32,
-    width: u32,
-    height: u32,
-    canvas_width: u32,
-    canvas_height: u32,
-    message: &str,
-) -> Result<(), String> {
-    if left
-        .checked_add(width)
-        .is_none_or(|right| right > canvas_width)
-        || top
-            .checked_add(height)
-            .is_none_or(|bottom| bottom > canvas_height)
-    {
-        return Err(message.to_owned());
-    }
-
-    Ok(())
-}
-
 fn color_type(embedded_gif: &TokenStream2, pixel_format: PixelFormat) -> TokenStream2 {
     match pixel_format {
         PixelFormat::Rgb888 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb888),
@@ -493,14 +226,9 @@ fn color_type(embedded_gif: &TokenStream2, pixel_format: PixelFormat) -> TokenSt
     }
 }
 
-fn frame_type(
-    embedded_gif: &TokenStream2,
-    frame_type: &str,
-    pixel_format: PixelFormat,
-) -> TokenStream2 {
+fn frame_type(embedded_gif: &TokenStream2, pixel_format: PixelFormat) -> TokenStream2 {
     let color = color_type(embedded_gif, pixel_format);
-    let frame_type = proc_macro2::Ident::new(frame_type, Span::call_site());
-    quote!(#embedded_gif::#frame_type<#color>)
+    quote!(#embedded_gif::GifFrame<#color>)
 }
 
 fn disposal_method(
@@ -515,48 +243,7 @@ fn disposal_method(
     }
 }
 
-fn convert_frame(
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    options: IncludeGifOptions,
-) -> Result<Vec<u8>, String> {
-    match options.pixel_format {
-        PixelFormat::Rgb888 => Ok(rgba
-            .chunks_exact(4)
-            .flat_map(|rgba| [rgba[0], rgba[1], rgba[2]])
-            .collect()),
-        PixelFormat::Rgb565 => Ok(rgba
-            .chunks_exact(4)
-            .flat_map(|rgba| rgb565_be(rgba[0], rgba[1], rgba[2]))
-            .collect()),
-        PixelFormat::BinaryColor => binary_frame(rgba, width, height, options.dither),
-    }
-}
-
-fn alpha_mask(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let width = usize::try_from(width).map_err(|_| "GIF width is too large".to_owned())?;
-    let height = usize::try_from(height).map_err(|_| "GIF height is too large".to_owned())?;
-    let expected_pixels = width
-        .checked_mul(height)
-        .ok_or_else(|| "GIF frame dimensions are too large".to_owned())?;
-
-    if rgba.len() / 4 != expected_pixels {
-        return Err("GIF RGBA frame buffer has an unexpected length".to_owned());
-    }
-
-    let mut mask = vec![0; (expected_pixels + 7) / 8];
-
-    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
-        if pixel[3] > 0 {
-            mask[index / 8] |= 0x80 >> (index % 8);
-        }
-    }
-
-    Ok(mask)
-}
-
-fn compressed_data(
+fn rle_data(
     rgba: &[u8],
     width: u32,
     height: u32,
@@ -573,11 +260,11 @@ fn compressed_data(
 
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         if pixel[3] == 0 {
-            symbols.push(CompressedSymbol::Transparent);
+            symbols.push(RleSymbol::Transparent);
             continue;
         }
 
-        symbols.push(CompressedSymbol::Opaque(quantized_color(
+        symbols.push(RleSymbol::Opaque(quantized_color(
             options.pixel_format,
             pixel[0],
             pixel[1],
@@ -589,24 +276,24 @@ fn compressed_data(
     Ok(encode_symbols(&symbols, options.pixel_format))
 }
 
-fn encode_symbols(symbols: &[CompressedSymbol], pixel_format: PixelFormat) -> Vec<u8> {
+fn encode_symbols(symbols: &[RleSymbol], pixel_format: PixelFormat) -> Vec<u8> {
     let mut data = Vec::new();
     let mut index = 0usize;
 
     while index < symbols.len() {
         match symbols[index] {
-            CompressedSymbol::Transparent => {
+            RleSymbol::Transparent => {
                 let len = matching_len(symbols, index, |symbol| {
-                    matches!(symbol, CompressedSymbol::Transparent)
+                    matches!(symbol, RleSymbol::Transparent)
                 });
                 push_skip(&mut data, len);
                 index += len;
             }
-            CompressedSymbol::Opaque(color) => {
+            RleSymbol::Opaque(color) => {
                 let solid_len = matching_len(
                     symbols,
                     index,
-                    |symbol| matches!(symbol, CompressedSymbol::Opaque(next) if next == color),
+                    |symbol| matches!(symbol, RleSymbol::Opaque(next) if next == color),
                 );
                 let raw_len = opaque_len(symbols, index);
 
@@ -626,7 +313,7 @@ fn encode_symbols(symbols: &[CompressedSymbol], pixel_format: PixelFormat) -> Ve
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-enum CompressedSymbol {
+enum RleSymbol {
     Transparent,
     Opaque(QuantizedColor),
 }
@@ -638,9 +325,9 @@ enum QuantizedColor {
 }
 
 fn matching_len(
-    symbols: &[CompressedSymbol],
+    symbols: &[RleSymbol],
     start: usize,
-    mut matches: impl FnMut(CompressedSymbol) -> bool,
+    mut matches: impl FnMut(RleSymbol) -> bool,
 ) -> usize {
     symbols[start..]
         .iter()
@@ -649,24 +336,24 @@ fn matching_len(
         .count()
 }
 
-fn opaque_len(symbols: &[CompressedSymbol], start: usize) -> usize {
+fn opaque_len(symbols: &[RleSymbol], start: usize) -> usize {
     matching_len(symbols, start, |symbol| {
-        matches!(symbol, CompressedSymbol::Opaque(_))
+        matches!(symbol, RleSymbol::Opaque(_))
     })
 }
 
-fn raw_until_solid(symbols: &[CompressedSymbol], start: usize) -> usize {
+fn raw_until_solid(symbols: &[RleSymbol], start: usize) -> usize {
     let mut len = 0usize;
 
     while start + len < symbols.len() {
-        let CompressedSymbol::Opaque(color) = symbols[start + len] else {
+        let RleSymbol::Opaque(color) = symbols[start + len] else {
             break;
         };
 
         let solid_len = matching_len(
             symbols,
             start + len,
-            |symbol| matches!(symbol, CompressedSymbol::Opaque(next) if next == color),
+            |symbol| matches!(symbol, RleSymbol::Opaque(next) if next == color),
         );
 
         if len > 0 && solid_len >= 2 {
@@ -701,7 +388,7 @@ fn push_solid(
     }
 }
 
-fn push_raw(data: &mut Vec<u8>, pixel_format: PixelFormat, symbols: &[CompressedSymbol]) {
+fn push_raw(data: &mut Vec<u8>, pixel_format: PixelFormat, symbols: &[RleSymbol]) {
     let mut offset = 0usize;
 
     while offset < symbols.len() {
@@ -709,7 +396,7 @@ fn push_raw(data: &mut Vec<u8>, pixel_format: PixelFormat, symbols: &[Compressed
         data.push(0b1000_0000 | (chunk - 1) as u8);
 
         for symbol in &symbols[offset..offset + chunk] {
-            let CompressedSymbol::Opaque(color) = *symbol else {
+            let RleSymbol::Opaque(color) = *symbol else {
                 unreachable!("raw chunks can only contain opaque pixels");
             };
             push_color(data, pixel_format, color);
@@ -760,31 +447,6 @@ fn quantized_color(
     }
 }
 
-fn rgb565_be(red: u8, green: u8, blue: u8) -> [u8; 2] {
-    let value =
-        ((u16::from(red) & 0xF8) << 8) | ((u16::from(green) & 0xFC) << 3) | (u16::from(blue) >> 3);
-    value.to_be_bytes()
-}
-
-fn binary_frame(rgba: &[u8], width: u32, height: u32, dither: Dither) -> Result<Vec<u8>, String> {
-    let width = usize::try_from(width).map_err(|_| "GIF width is too large".to_owned())?;
-    let height = usize::try_from(height).map_err(|_| "GIF height is too large".to_owned())?;
-    let luminance = rgba
-        .chunks_exact(4)
-        .map(|rgba| grayscale(rgba[0], rgba[1], rgba[2]))
-        .collect::<Vec<_>>();
-
-    let pixels = match dither {
-        Dither::None => luminance
-            .into_iter()
-            .map(|value| value >= 128)
-            .collect::<Vec<_>>(),
-        Dither::FloydSteinberg => floyd_steinberg(luminance, width, height),
-    };
-
-    Ok(pack_binary_rows(&pixels, width, height))
-}
-
 fn grayscale(red: u8, green: u8, blue: u8) -> i16 {
     ((u16::from(red) * 299 + u16::from(green) * 587 + u16::from(blue) * 114) / 1000) as i16
 }
@@ -829,21 +491,6 @@ fn diffuse(
 
     let index = y * width + x;
     values[index] += error * numerator / 16;
-}
-
-fn pack_binary_rows(pixels: &[bool], width: usize, height: usize) -> Vec<u8> {
-    let bytes_per_row = (width + 7) / 8;
-    let mut data = vec![0; bytes_per_row * height];
-
-    for y in 0..height {
-        for x in 0..width {
-            if pixels[y * width + x] {
-                data[y * bytes_per_row + x / 8] |= 0x80 >> (x % 8);
-            }
-        }
-    }
-
-    data
 }
 
 fn manifest_relative_path(path: String) -> Result<PathBuf, String> {
