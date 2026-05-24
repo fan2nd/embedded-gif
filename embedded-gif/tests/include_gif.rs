@@ -4,7 +4,7 @@ use embedded_gif::embedded_graphics::{
 };
 use embedded_gif::{
     include_complete_gif, include_raw_gif, CompleteGif, CompleteGifFrame, DisposalMethod, RawGif,
-    RawGifFrame,
+    RawGifFrame, RawGifRleFrame, RawRleGif,
 };
 
 static COMPLETE_FRAMES: &[CompleteGifFrame] =
@@ -17,6 +17,8 @@ static COMPLETE_BINARY_FRAMES: &[CompleteGifFrame<BinaryColor>] = include_comple
     dither = true
 );
 static RAW_FRAMES: &[RawGifFrame] = include_raw_gif!("tests/fixtures/two_frames.gif");
+static RAW_RLE_FRAMES: &[RawGifRleFrame] =
+    include_raw_gif!("tests/fixtures/two_frames.gif", compression = Rle);
 
 #[test]
 fn embeds_complete_frames_as_canvas_sized_image_raw_values() {
@@ -47,6 +49,17 @@ fn embeds_raw_frames_with_gif_semantics() {
 }
 
 #[test]
+fn embeds_raw_frames_with_rle_compression() {
+    assert_eq!(RAW_RLE_FRAMES.len(), 2);
+    assert_eq!(RAW_RLE_FRAMES[0].size(), Size::new(1, 1));
+    assert_eq!(RAW_RLE_FRAMES[0].runs().len(), 1);
+    assert_eq!(RAW_RLE_FRAMES[0].runs()[0].skip(), 0);
+    assert_eq!(RAW_RLE_FRAMES[0].runs()[0].len(), 1);
+    assert_eq!(RAW_RLE_FRAMES[0].top_left(), Point::new(0, 0));
+    assert_eq!(RAW_RLE_FRAMES[0].disposal_method(), DisposalMethod::Any);
+}
+
+#[test]
 fn manages_complete_gif_timing() {
     let mut animation = CompleteGif::new(COMPLETE_FRAMES);
 
@@ -63,6 +76,16 @@ fn manages_complete_gif_timing() {
 #[test]
 fn manages_raw_gif_timing() {
     let mut animation = RawGif::new(RAW_FRAMES);
+
+    assert_eq!(animation.len(), 2);
+    assert_eq!(animation.frame_index(), 0);
+    assert!(animation.tick_centiseconds(10));
+    assert_eq!(animation.frame_index(), 1);
+}
+
+#[test]
+fn manages_raw_rle_gif_timing() {
+    let mut animation = RawRleGif::new(RAW_RLE_FRAMES);
 
     assert_eq!(animation.len(), 2);
     assert_eq!(animation.frame_index(), 0);

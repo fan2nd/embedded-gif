@@ -25,6 +25,21 @@ the current diff. Use `draw_current_composited` when the caller wants raw storag
 but wants the library to replay raw frames and draw the complete current visual
 state.
 
+Raw GIFs can also use RLE compression:
+
+```rust
+use embedded_gif::{include_raw_gif, RawGifRleFrame, RawRleGif};
+
+static RAW_RLE: &[RawGifRleFrame] =
+    include_raw_gif!("tests/fixtures/two_frames.gif", compression = Rle);
+
+let mut animation = RawRleGif::new(RAW_RLE);
+animation.tick_millis(100);
+```
+
+RLE stores transparent gaps and same-color opaque runs instead of per-pixel image
+data plus an alpha mask.
+
 Both macros support pixel conversion:
 
 ```rust

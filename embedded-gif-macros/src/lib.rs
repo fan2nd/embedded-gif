@@ -49,6 +49,7 @@ struct IncludeGifInput {
 struct IncludeGifOptions {
     pixel_format: PixelFormat,
     dither: Dither,
+    compression: Compression,
 }
 
 impl Default for IncludeGifOptions {
@@ -56,6 +57,7 @@ impl Default for IncludeGifOptions {
         Self {
             pixel_format: PixelFormat::Rgb888,
             dither: Dither::None,
+            compression: Compression::None,
         }
     }
 }
@@ -71,6 +73,12 @@ enum PixelFormat {
 enum Dither {
     None,
     FloydSteinberg,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum Compression {
+    None,
+    Rle,
 }
 
 impl Parse for IncludeGifInput {
@@ -93,10 +101,11 @@ impl Parse for IncludeGifInput {
             match key.as_str() {
                 "pixel_format" => options.pixel_format = parse_pixel_format(value)?,
                 "dither" => options.dither = parse_dither(value)?,
+                "compression" => options.compression = parse_compression(value)?,
                 _ => {
                     return Err(syn::Error::new(
                         key_ident.span(),
-                        "supported options are `pixel_format` and `dither`",
+                        "supported options are `pixel_format`, `dither`, and `compression`",
                     ));
                 }
             }
@@ -160,11 +169,33 @@ fn parse_dither(value: OptionValue) -> syn::Result<Dither> {
     }
 }
 
+fn parse_compression(value: OptionValue) -> syn::Result<Compression> {
+    let OptionValue::Ident(value) = value else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`compression` expects `None` or `Rle`",
+        ));
+    };
+
+    match value.to_string().as_str() {
+        "None" => Ok(Compression::None),
+        "Rle" => Ok(Compression::Rle),
+        _ => Err(syn::Error::new(
+            value.span(),
+            "supported compression values are `None` and `Rle`",
+        )),
+    }
+}
+
 fn expand_include_gif(input: &IncludeGifInput, mode: GifMode) -> Result<TokenStream2, String> {
     if input.options.dither != Dither::None
         && !matches!(input.options.pixel_format, PixelFormat::BinaryColor)
     {
         return Err("`dither` is only supported with `pixel_format = BinaryColor`".to_owned());
+    }
+
+    if input.options.compression != Compression::None && !matches!(mode, GifMode::Raw) {
+        return Err("`compression` is only supported by `include_raw_gif!`".to_owned());
     }
 
     match mode {
@@ -246,37 +277,62 @@ fn expand_raw_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
         .read_next_frame()
         .map_err(|error| format!("failed to read GIF frame: {error}"))?
     {
-        let data_ident = format_ident!("__EMBEDDED_GIF_RAW_FRAME_{frame_count}");
-        let mask_ident = format_ident!("__EMBEDDED_GIF_RAW_MASK_{frame_count}");
         let width = u32::from(frame.width);
         let height = u32::from(frame.height);
         let left = i32::from(frame.left);
         let top = i32::from(frame.top);
         let delay = frame.delay;
         let disposal = disposal_method(&embedded_gif, frame.dispose);
-        let bytes = convert_frame(&frame.buffer, width, height, input.options)?;
-        let alpha_mask = alpha_mask(&frame.buffer, width, height)?;
         let color = color_type(&embedded_gif, input.options.pixel_format);
 
-        frame_tokens.push(quote! {
-            {
-                const #data_ident: &[u8] = &[#(#bytes),*];
-                const #mask_ident: &[u8] = &[#(#alpha_mask),*];
-                #embedded_gif::RawGifFrame::new(
-                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#data_ident, #width),
-                    #mask_ident,
-                    #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
-                    #delay,
-                    #disposal,
-                )
+        match input.options.compression {
+            Compression::None => {
+                let data_ident = format_ident!("__EMBEDDED_GIF_RAW_FRAME_{frame_count}");
+                let mask_ident = format_ident!("__EMBEDDED_GIF_RAW_MASK_{frame_count}");
+                let bytes = convert_frame(&frame.buffer, width, height, input.options)?;
+                let alpha_mask = alpha_mask(&frame.buffer, width, height)?;
+
+                frame_tokens.push(quote! {
+                    {
+                        const #data_ident: &[u8] = &[#(#bytes),*];
+                        const #mask_ident: &[u8] = &[#(#alpha_mask),*];
+                        #embedded_gif::RawGifFrame::new(
+                            #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#data_ident, #width),
+                            #mask_ident,
+                            #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
+                            #delay,
+                            #disposal,
+                        )
+                    }
+                });
             }
-        });
+            Compression::Rle => {
+                let runs_ident = format_ident!("__EMBEDDED_GIF_RAW_RLE_RUNS_{frame_count}");
+                let runs = rle_runs(&embedded_gif, &frame.buffer, width, height, input.options)?;
+
+                frame_tokens.push(quote! {
+                    {
+                        const #runs_ident: &[#embedded_gif::RawGifRleRun<#color>] = &[#(#runs),*];
+                        #embedded_gif::RawGifRleFrame::new(
+                            #runs_ident,
+                            #embedded_gif::embedded_graphics::geometry::Size::new(#width, #height),
+                            #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
+                            #delay,
+                            #disposal,
+                        )
+                    }
+                });
+            }
+        }
         frame_count += 1;
     }
 
     ensure_frames(&gif_path, frame_count)?;
 
-    let frame_type = frame_type(&embedded_gif, "RawGifFrame", input.options.pixel_format);
+    let frame_type = match input.options.compression {
+        Compression::None => frame_type(&embedded_gif, "RawGifFrame", input.options.pixel_format),
+        Compression::Rle => frame_type(&embedded_gif, "RawGifRleFrame", input.options.pixel_format),
+    };
     Ok(quote! {
         &[
             #(#frame_tokens),*
@@ -494,6 +550,183 @@ fn alpha_mask(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     }
 
     Ok(mask)
+}
+
+fn rle_runs(
+    embedded_gif: &TokenStream2,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    options: IncludeGifOptions,
+) -> Result<Vec<TokenStream2>, String> {
+    let mut runs = Vec::new();
+    let mut skip = 0usize;
+    let mut current_color = None;
+    let mut len = 0usize;
+    let dithered_binary = if matches!(options.pixel_format, PixelFormat::BinaryColor)
+        && options.dither == Dither::FloydSteinberg
+    {
+        Some(dithered_binary_pixels(rgba, width, height)?)
+    } else {
+        None
+    };
+
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        if pixel[3] == 0 {
+            flush_rle_run(
+                embedded_gif,
+                options.pixel_format,
+                &mut runs,
+                &mut skip,
+                &mut current_color,
+                &mut len,
+            );
+            skip = skip.saturating_add(1);
+            continue;
+        }
+
+        let color = quantized_color(
+            options.pixel_format,
+            pixel[0],
+            pixel[1],
+            pixel[2],
+            dithered_binary.as_ref().map(|pixels| pixels[index]),
+        );
+        if current_color == Some(color) && len < u16::MAX as usize {
+            len += 1;
+        } else {
+            flush_rle_run(
+                embedded_gif,
+                options.pixel_format,
+                &mut runs,
+                &mut skip,
+                &mut current_color,
+                &mut len,
+            );
+            current_color = Some(color);
+            len = 1;
+        }
+    }
+
+    flush_rle_run(
+        embedded_gif,
+        options.pixel_format,
+        &mut runs,
+        &mut skip,
+        &mut current_color,
+        &mut len,
+    );
+
+    Ok(runs)
+}
+
+fn flush_rle_run(
+    embedded_gif: &TokenStream2,
+    pixel_format: PixelFormat,
+    runs: &mut Vec<TokenStream2>,
+    skip: &mut usize,
+    current_color: &mut Option<QuantizedColor>,
+    len: &mut usize,
+) {
+    let Some(color) = current_color.take() else {
+        return;
+    };
+
+    let mut remaining_skip = *skip;
+    let mut remaining_len = *len;
+
+    while remaining_skip > u16::MAX as usize {
+        runs.push(rle_run_token(
+            embedded_gif,
+            pixel_format,
+            u16::MAX,
+            0,
+            color,
+        ));
+        remaining_skip -= u16::MAX as usize;
+    }
+
+    while remaining_len > 0 {
+        let run_len = remaining_len.min(u16::MAX as usize) as u16;
+        runs.push(rle_run_token(
+            embedded_gif,
+            pixel_format,
+            remaining_skip as u16,
+            run_len,
+            color,
+        ));
+        remaining_skip = 0;
+        remaining_len -= usize::from(run_len);
+    }
+
+    *skip = 0;
+    *len = 0;
+}
+
+fn rle_run_token(
+    embedded_gif: &TokenStream2,
+    pixel_format: PixelFormat,
+    skip: u16,
+    len: u16,
+    color: QuantizedColor,
+) -> TokenStream2 {
+    let color = color_constructor(embedded_gif, pixel_format, color);
+    quote!(#embedded_gif::RawGifRleRun::new(#skip, #len, #color))
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum QuantizedColor {
+    Rgb(u8, u8, u8),
+    Binary(bool),
+}
+
+fn dithered_binary_pixels(rgba: &[u8], width: u32, height: u32) -> Result<Vec<bool>, String> {
+    let width = usize::try_from(width).map_err(|_| "GIF width is too large".to_owned())?;
+    let height = usize::try_from(height).map_err(|_| "GIF height is too large".to_owned())?;
+    let luminance = rgba
+        .chunks_exact(4)
+        .map(|rgba| grayscale(rgba[0], rgba[1], rgba[2]))
+        .collect::<Vec<_>>();
+
+    Ok(floyd_steinberg(luminance, width, height))
+}
+
+fn quantized_color(
+    pixel_format: PixelFormat,
+    red: u8,
+    green: u8,
+    blue: u8,
+    dithered_binary: Option<bool>,
+) -> QuantizedColor {
+    match pixel_format {
+        PixelFormat::Rgb888 => QuantizedColor::Rgb(red, green, blue),
+        PixelFormat::Rgb565 => QuantizedColor::Rgb(red >> 3, green >> 2, blue >> 3),
+        PixelFormat::BinaryColor => QuantizedColor::Binary(
+            dithered_binary.unwrap_or_else(|| grayscale(red, green, blue) >= 128),
+        ),
+    }
+}
+
+fn color_constructor(
+    embedded_gif: &TokenStream2,
+    pixel_format: PixelFormat,
+    color: QuantizedColor,
+) -> TokenStream2 {
+    match (pixel_format, color) {
+        (PixelFormat::Rgb888, QuantizedColor::Rgb(red, green, blue)) => {
+            quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb888::new(#red, #green, #blue))
+        }
+        (PixelFormat::Rgb565, QuantizedColor::Rgb(red, green, blue)) => {
+            quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb565::new(#red, #green, #blue))
+        }
+        (PixelFormat::BinaryColor, QuantizedColor::Binary(true)) => {
+            quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor::On)
+        }
+        (PixelFormat::BinaryColor, QuantizedColor::Binary(false)) => {
+            quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor::Off)
+        }
+        _ => unreachable!("pixel format and quantized color mismatch"),
+    }
 }
 
 fn rgb565_be(red: u8, green: u8, blue: u8) -> [u8; 2] {
