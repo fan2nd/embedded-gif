@@ -6,8 +6,8 @@ use embedded_gif::embedded_graphics::{
     Pixel,
 };
 use embedded_gif::{
-    include_gif_frames, DisposalMethod, Gif, GifFrame, PaletteIndex1, PaletteIndex2, PaletteIndex4,
-    PaletteIndex8,
+    include_gif_frames, include_gif_indexed, DisposalMethod, Gif, GifFrame, IndexedGif,
+    PaletteIndex2, PaletteIndex4,
 };
 
 static FRAMES: &[GifFrame] = include_gif_frames!("tests/fixtures/two_frames.gif");
@@ -18,21 +18,9 @@ static BINARY_FRAMES: &[GifFrame<BinaryColor>] = include_gif_frames!(
     pixel_format = BinaryColor,
     dither = true
 );
-static PALETTE1_FRAMES: &[GifFrame<PaletteIndex1<Rgb565>>] = include_gif_frames!(
-    "tests/fixtures/two_frames.gif",
-    pixel_format = PaletteIndex1<Rgb565>
-);
-static PALETTE2_FRAMES: &[GifFrame<PaletteIndex2<Rgb565>>] = include_gif_frames!(
-    "tests/fixtures/two_frames.gif",
-    pixel_format = PaletteIndex2<Rgb565>
-);
-static PALETTE4_FRAMES: &[GifFrame<PaletteIndex4<Rgb565>>] = include_gif_frames!(
+static INDEXED_GIF: IndexedGif<PaletteIndex4<Rgb565>, Rgb565> = include_gif_indexed!(
     "tests/fixtures/two_frames.gif",
     pixel_format = PaletteIndex4<Rgb565>
-);
-static PALETTE8_FRAMES: &[GifFrame<PaletteIndex8<Rgb565>>] = include_gif_frames!(
-    "tests/fixtures/two_frames.gif",
-    pixel_format = PaletteIndex8<Rgb565>
 );
 
 #[test]
@@ -53,15 +41,13 @@ fn embeds_selected_pixel_formats() {
 
     assert_eq!(BINARY_FRAMES.len(), 2);
     assert_eq!(BINARY_FRAMES[0].size(), Size::new(1, 1));
+}
 
-    assert_eq!(PALETTE1_FRAMES.len(), 2);
-    assert_eq!(PALETTE1_FRAMES[0].data(), &[0xc0, 0x00]);
-    assert_eq!(PALETTE2_FRAMES.len(), 2);
-    assert_eq!(PALETTE2_FRAMES[0].data(), &[0xc0, 0x00]);
-    assert_eq!(PALETTE4_FRAMES.len(), 2);
-    assert_eq!(PALETTE4_FRAMES[0].data(), &[0xc0, 0x00]);
-    assert_eq!(PALETTE8_FRAMES.len(), 2);
-    assert_eq!(PALETTE8_FRAMES[0].data(), &[0xc0, 0x00]);
+#[test]
+fn embeds_indexed_gif_with_palette() {
+    assert_eq!(INDEXED_GIF.len(), 2);
+    assert!(!INDEXED_GIF.palette().is_empty());
+    assert_eq!(INDEXED_GIF.frames()[0].data(), &[0xc0, 0x00]);
 }
 
 #[test]

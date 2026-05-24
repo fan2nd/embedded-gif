@@ -24,6 +24,10 @@ pub trait RleColor: Copy {
     fn read(value: u32) -> Option<Self>;
 }
 
+pub trait PaletteIndexColor<C>: RleColor {
+    fn index(self) -> usize;
+}
+
 impl RleColor for Rgb888 {
     const BITS_PER_PIXEL: usize = 24;
 
@@ -78,6 +82,24 @@ impl_rle_palette_index!(PaletteIndex2, 2);
 impl_rle_palette_index!(PaletteIndex4, 4);
 impl_rle_palette_index!(PaletteIndex8, 8);
 
+macro_rules! impl_palette_index_color {
+    ($name:ident) => {
+        impl<C> PaletteIndexColor<C> for $name<C>
+        where
+            C: PixelColor,
+        {
+            fn index(self) -> usize {
+                self.index() as usize
+            }
+        }
+    };
+}
+
+impl_palette_index_color!(PaletteIndex1);
+impl_palette_index_color!(PaletteIndex2);
+impl_palette_index_color!(PaletteIndex4);
+impl_palette_index_color!(PaletteIndex8);
+
 pub(crate) fn draw_frame<C, D>(
     target: &mut D,
     frame: &GifFrame<C>,
@@ -95,6 +117,38 @@ where
         let (pixel_index, color) = pixels.next_pixel()?;
         let x = pixel_index % width;
         let y = pixel_index / width;
+
+        if y >= height {
+            return None;
+        }
+
+        Some(Pixel(
+            origin + frame.top_left() + Point::new(x as i32, y as i32),
+            color,
+        ))
+    }))
+}
+
+pub(crate) fn draw_indexed_frame<I, C, D>(
+    target: &mut D,
+    frame: &GifFrame<I>,
+    palette: &[C],
+    origin: Point,
+) -> Result<(), D::Error>
+where
+    I: PaletteIndexColor<C> + PixelColor + 'static,
+    C: PixelColor + 'static,
+    D: DrawTarget<Color = C>,
+{
+    let width = frame.size().width as usize;
+    let height = frame.size().height as usize;
+    let mut pixels = RlePixels::<I>::new(frame.data(), width.saturating_mul(height));
+
+    target.draw_iter(core::iter::from_fn(move || {
+        let (pixel_index, index) = pixels.next_pixel()?;
+        let x = pixel_index % width;
+        let y = pixel_index / width;
+        let color = *palette.get(index.index())?;
 
         if y >= height {
             return None;

@@ -38,6 +38,16 @@ pub(crate) enum PixelFormat {
 }
 
 impl PixelFormat {
+    pub(crate) fn is_indexed(self) -> bool {
+        matches!(
+            self,
+            Self::PaletteIndex1(_)
+                | Self::PaletteIndex2(_)
+                | Self::PaletteIndex4(_)
+                | Self::PaletteIndex8(_)
+        )
+    }
+
     pub(crate) fn bits_per_pixel(self) -> u8 {
         match self {
             Self::Rgb888 => 24,
@@ -46,6 +56,16 @@ impl PixelFormat {
             Self::PaletteIndex2(_) => 2,
             Self::PaletteIndex4(_) => 4,
             Self::PaletteIndex8(_) => 8,
+        }
+    }
+
+    pub(crate) fn palette_color(self) -> Option<PaletteColor> {
+        match self {
+            Self::PaletteIndex1(color)
+            | Self::PaletteIndex2(color)
+            | Self::PaletteIndex4(color)
+            | Self::PaletteIndex8(color) => Some(color),
+            _ => None,
         }
     }
 
@@ -89,12 +109,41 @@ pub(crate) enum PaletteColor {
 }
 
 impl PaletteColor {
-    fn color_type(self, embedded_gif: &TokenStream2) -> TokenStream2 {
+    pub(crate) fn color_type(self, embedded_gif: &TokenStream2) -> TokenStream2 {
         match self {
             Self::Rgb888 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb888),
             Self::Rgb565 => quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb565),
             Self::BinaryColor => {
                 quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor)
+            }
+        }
+    }
+
+    pub(crate) fn value(
+        self,
+        embedded_gif: &TokenStream2,
+        red: u8,
+        green: u8,
+        blue: u8,
+    ) -> TokenStream2 {
+        match self {
+            Self::Rgb888 => {
+                quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb888::new(#red, #green, #blue))
+            }
+            Self::Rgb565 => {
+                let red = red >> 3;
+                let green = green >> 2;
+                let blue = blue >> 3;
+                quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb565::new(#red, #green, #blue))
+            }
+            Self::BinaryColor => {
+                if (u16::from(red) * 299 + u16::from(green) * 587 + u16::from(blue) * 114) / 1000
+                    >= 128
+                {
+                    quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor::On)
+                } else {
+                    quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor::Off)
+                }
             }
         }
     }

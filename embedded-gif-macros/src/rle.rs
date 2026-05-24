@@ -9,6 +9,10 @@ pub(crate) fn encode_frame(
     height: u32,
     options: IncludeGifOptions,
 ) -> Result<Vec<u8>, String> {
+    if options.pixel_format.is_indexed() {
+        return Err("indexed pixel formats require include_gif_indexed!".to_owned());
+    }
+
     let binary_pixels = if matches!(options.pixel_format, PixelFormat::BinaryColor)
         && options.dither == Dither::FloydSteinberg
     {
@@ -34,6 +38,26 @@ pub(crate) fn encode_frame(
     }
 
     Ok(Encoder::new(options.pixel_format).encode(&symbols))
+}
+
+pub(crate) fn encode_indexed_frame(
+    indices: &[u8],
+    transparent: Option<u8>,
+    pixel_format: PixelFormat,
+) -> Vec<u8> {
+    let symbols = indices
+        .iter()
+        .copied()
+        .map(|index| {
+            if Some(index) == transparent {
+                Symbol::Transparent
+            } else {
+                Symbol::Opaque(Color::Index(index))
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Encoder::new(pixel_format).encode(&symbols)
 }
 
 struct Encoder {
