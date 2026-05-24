@@ -1,6 +1,6 @@
 use std::{env, fs::File, path::PathBuf};
 
-use gif::{ColorOutput, DecodeOptions};
+use gif::{ColorOutput, DecodeOptions, DisposalMethod};
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use proc_macro_crate::{crate_name, FoundCrate};
@@ -160,6 +160,11 @@ fn expand_include_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
         .read_info(file)
         .map_err(|error| format!("failed to decode GIF '{}': {error}", gif_path.display()))?;
 
+    let canvas_width = u32::from(reader.width());
+    let canvas_height = u32::from(reader.height());
+    let canvas_len = checked_rgba_len(canvas_width, canvas_height)?;
+    let mut canvas = vec![0; canvas_len];
+    let mut previous_canvas = canvas.clone();
     let mut frame_tokens = Vec::new();
     let mut frame_count = 0usize;
 
@@ -167,22 +172,31 @@ fn expand_include_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
         .read_next_frame()
         .map_err(|error| format!("failed to read GIF frame: {error}"))?
     {
+        previous_canvas.clone_from(&canvas);
+        overlay_frame(&mut canvas, canvas_width, canvas_height, frame)?;
+
         let ident = format_ident!("__EMBEDDED_GIF_FRAME_{frame_count}");
-        let width = u32::from(frame.width);
-        let height = u32::from(frame.height);
         let delay = frame.delay;
-        let bytes = convert_frame(&frame.buffer, width, height, input.options)?;
+        let bytes = convert_frame(&canvas, canvas_width, canvas_height, input.options)?;
         let color = color_type(&embedded_gif, input.options.pixel_format);
 
         frame_tokens.push(quote! {
             {
                 const #ident: &[u8] = &[#(#bytes),*];
                 #embedded_gif::GifFrame::new(
-                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#ident, #width),
+                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#ident, #canvas_width),
                     #delay,
                 )
             }
         });
+
+        dispose_frame(
+            &mut canvas,
+            &previous_canvas,
+            canvas_width,
+            canvas_height,
+            frame,
+        )?;
         frame_count += 1;
     }
 
@@ -200,6 +214,99 @@ fn expand_include_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
             #(#frame_tokens),*
         ] as &'static [#frame_type]
     })
+}
+
+fn checked_rgba_len(width: u32, height: u32) -> Result<usize, String> {
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| "GIF canvas dimensions are too large".to_owned())?;
+    let bytes = pixels
+        .checked_mul(4)
+        .ok_or_else(|| "GIF canvas is too large".to_owned())?;
+
+    usize::try_from(bytes).map_err(|_| "GIF canvas is too large".to_owned())
+}
+
+fn overlay_frame(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    frame: &gif::Frame<'_>,
+) -> Result<(), String> {
+    let frame_width = u32::from(frame.width);
+    let frame_height = u32::from(frame.height);
+    let frame_left = u32::from(frame.left);
+    let frame_top = u32::from(frame.top);
+
+    if frame_left
+        .checked_add(frame_width)
+        .is_none_or(|right| right > canvas_width)
+        || frame_top
+            .checked_add(frame_height)
+            .is_none_or(|bottom| bottom > canvas_height)
+    {
+        return Err("GIF frame lies outside the logical canvas".to_owned());
+    }
+
+    for y in 0..frame_height {
+        for x in 0..frame_width {
+            let source = ((y * frame_width + x) * 4) as usize;
+            if frame.buffer[source + 3] == 0 {
+                continue;
+            }
+
+            let target = (((frame_top + y) * canvas_width + frame_left + x) * 4) as usize;
+            canvas[target..target + 4].copy_from_slice(&frame.buffer[source..source + 4]);
+        }
+    }
+
+    Ok(())
+}
+
+fn dispose_frame(
+    canvas: &mut [u8],
+    previous_canvas: &[u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    frame: &gif::Frame<'_>,
+) -> Result<(), String> {
+    match frame.dispose {
+        DisposalMethod::Any | DisposalMethod::Keep => {}
+        DisposalMethod::Background => clear_frame_area(canvas, canvas_width, canvas_height, frame)?,
+        DisposalMethod::Previous => canvas.copy_from_slice(previous_canvas),
+    }
+
+    Ok(())
+}
+
+fn clear_frame_area(
+    canvas: &mut [u8],
+    canvas_width: u32,
+    canvas_height: u32,
+    frame: &gif::Frame<'_>,
+) -> Result<(), String> {
+    let frame_width = u32::from(frame.width);
+    let frame_height = u32::from(frame.height);
+    let frame_left = u32::from(frame.left);
+    let frame_top = u32::from(frame.top);
+
+    if frame_left
+        .checked_add(frame_width)
+        .is_none_or(|right| right > canvas_width)
+        || frame_top
+            .checked_add(frame_height)
+            .is_none_or(|bottom| bottom > canvas_height)
+    {
+        return Err("GIF frame disposal area lies outside the logical canvas".to_owned());
+    }
+
+    for y in frame_top..frame_top + frame_height {
+        let row_start = ((y * canvas_width + frame_left) * 4) as usize;
+        let row_end = row_start + (frame_width as usize * 4);
+        canvas[row_start..row_end].fill(0);
+    }
+
+    Ok(())
 }
 
 fn color_type(embedded_gif: &TokenStream2, pixel_format: PixelFormat) -> TokenStream2 {
