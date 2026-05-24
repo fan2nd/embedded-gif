@@ -1,0 +1,11 @@
+[package]
+name = "embedded-gif"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Embed GIF frames as embedded-graphics ImageRaw values."
+
+[dependencies]
+embedded-graphics.workspace = true
+embedded-gif-macros.workspace = true
