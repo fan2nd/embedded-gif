@@ -23,6 +23,7 @@ fn embeds_complete_frames_as_canvas_sized_image_raw_values() {
     assert_eq!(COMPLETE_FRAMES.len(), 2);
     assert_eq!(COMPLETE_FRAMES[0].image().size(), Size::new(1, 1));
     assert_eq!(COMPLETE_FRAMES[1].image().size(), Size::new(1, 1));
+    assert_eq!(COMPLETE_FRAMES[0].alpha_mask(), &[0b1000_0000]);
     assert_eq!(COMPLETE_FRAMES[0].delay_centiseconds(), 10);
     assert_eq!(COMPLETE_FRAMES[1].delay_millis(), 100);
 }
@@ -40,6 +41,7 @@ fn embeds_complete_frames_in_selected_pixel_formats() {
 fn embeds_raw_frames_with_gif_semantics() {
     assert_eq!(RAW_FRAMES.len(), 2);
     assert_eq!(RAW_FRAMES[0].image().size(), Size::new(1, 1));
+    assert_eq!(RAW_FRAMES[0].alpha_mask(), &[0b1000_0000]);
     assert_eq!(RAW_FRAMES[0].top_left(), Point::new(0, 0));
     assert_eq!(RAW_FRAMES[0].disposal_method(), DisposalMethod::Any);
 }

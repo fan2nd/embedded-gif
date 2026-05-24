@@ -192,16 +192,20 @@ fn expand_complete_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> 
         previous_canvas.clone_from(&canvas);
         overlay_frame(&mut canvas, canvas_width, canvas_height, frame)?;
 
-        let ident = format_ident!("__EMBEDDED_GIF_COMPLETE_FRAME_{frame_count}");
+        let data_ident = format_ident!("__EMBEDDED_GIF_COMPLETE_FRAME_{frame_count}");
+        let mask_ident = format_ident!("__EMBEDDED_GIF_COMPLETE_MASK_{frame_count}");
         let delay = frame.delay;
         let bytes = convert_frame(&canvas, canvas_width, canvas_height, input.options)?;
+        let alpha_mask = alpha_mask(&canvas, canvas_width, canvas_height)?;
         let color = color_type(&embedded_gif, input.options.pixel_format);
 
         frame_tokens.push(quote! {
             {
-                const #ident: &[u8] = &[#(#bytes),*];
+                const #data_ident: &[u8] = &[#(#bytes),*];
+                const #mask_ident: &[u8] = &[#(#alpha_mask),*];
                 #embedded_gif::CompleteGifFrame::new(
-                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#ident, #canvas_width),
+                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#data_ident, #canvas_width),
+                    #mask_ident,
                     #delay,
                 )
             }
@@ -242,7 +246,8 @@ fn expand_raw_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
         .read_next_frame()
         .map_err(|error| format!("failed to read GIF frame: {error}"))?
     {
-        let ident = format_ident!("__EMBEDDED_GIF_RAW_FRAME_{frame_count}");
+        let data_ident = format_ident!("__EMBEDDED_GIF_RAW_FRAME_{frame_count}");
+        let mask_ident = format_ident!("__EMBEDDED_GIF_RAW_MASK_{frame_count}");
         let width = u32::from(frame.width);
         let height = u32::from(frame.height);
         let left = i32::from(frame.left);
@@ -250,13 +255,16 @@ fn expand_raw_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
         let delay = frame.delay;
         let disposal = disposal_method(&embedded_gif, frame.dispose);
         let bytes = convert_frame(&frame.buffer, width, height, input.options)?;
+        let alpha_mask = alpha_mask(&frame.buffer, width, height)?;
         let color = color_type(&embedded_gif, input.options.pixel_format);
 
         frame_tokens.push(quote! {
             {
-                const #ident: &[u8] = &[#(#bytes),*];
+                const #data_ident: &[u8] = &[#(#bytes),*];
+                const #mask_ident: &[u8] = &[#(#alpha_mask),*];
                 #embedded_gif::RawGifFrame::new(
-                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#ident, #width),
+                    #embedded_gif::embedded_graphics::image::ImageRaw::<#color>::new(#data_ident, #width),
+                    #mask_ident,
                     #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
                     #delay,
                     #disposal,
@@ -464,6 +472,28 @@ fn convert_frame(
             .collect()),
         PixelFormat::BinaryColor => binary_frame(rgba, width, height, options.dither),
     }
+}
+
+fn alpha_mask(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let width = usize::try_from(width).map_err(|_| "GIF width is too large".to_owned())?;
+    let height = usize::try_from(height).map_err(|_| "GIF height is too large".to_owned())?;
+    let expected_pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| "GIF frame dimensions are too large".to_owned())?;
+
+    if rgba.len() / 4 != expected_pixels {
+        return Err("GIF RGBA frame buffer has an unexpected length".to_owned());
+    }
+
+    let mut mask = vec![0; (expected_pixels + 7) / 8];
+
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        if pixel[3] > 0 {
+            mask[index / 8] |= 0x80 >> (index % 8);
+        }
+    }
+
+    Ok(mask)
 }
 
 fn rgb565_be(red: u8, green: u8, blue: u8) -> [u8; 2] {

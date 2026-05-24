@@ -15,10 +15,11 @@ animation.tick_millis(100);
 ```
 
 `include_complete_gif!` composites GIF frames onto the logical canvas at compile
-time. Each generated frame is a full canvas-sized `ImageRaw`.
+time. Each generated frame is a full canvas-sized `ImageRaw` plus a 1bpp alpha
+mask, so transparent canvas pixels are skipped when drawing.
 
 `include_raw_gif!` preserves GIF frame semantics. Each generated frame keeps its
-own image, top-left offset, delay, and disposal method. Use
+own image, 1bpp alpha mask, top-left offset, delay, and disposal method. Use
 `draw_current_delta` when the caller maintains the framebuffer and applies only
 the current diff. Use `draw_current_composited` when the caller wants raw storage
 but wants the library to replay raw frames and draw the complete current visual

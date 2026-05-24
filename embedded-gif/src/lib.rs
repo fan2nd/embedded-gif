@@ -7,7 +7,7 @@ pub use embedded_graphics;
 use embedded_graphics::{
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Point},
-    image::{Image, ImageRaw},
+    image::{GetPixel, ImageRaw},
     iterator::raw::RawDataSlice,
     pixelcolor::{
         raw::{BigEndian, ByteOrder},
@@ -15,7 +15,7 @@ use embedded_graphics::{
     },
     primitives::Rectangle,
     transform::Transform,
-    Drawable,
+    Pixel,
 };
 
 pub type GifImage<C = Rgb888, BO = BigEndian> = ImageRaw<'static, C, BO>;
@@ -35,6 +35,7 @@ where
     BO: ByteOrder + 'static,
 {
     image: GifImage<C, BO>,
+    alpha_mask: &'static [u8],
     delay_centiseconds: u16,
 }
 
@@ -43,15 +44,24 @@ where
     C: PixelColor + From<C::Raw> + 'static,
     BO: ByteOrder + 'static,
 {
-    pub const fn new(image: GifImage<C, BO>, delay_centiseconds: u16) -> Self {
+    pub const fn new(
+        image: GifImage<C, BO>,
+        alpha_mask: &'static [u8],
+        delay_centiseconds: u16,
+    ) -> Self {
         Self {
             image,
+            alpha_mask,
             delay_centiseconds,
         }
     }
 
     pub const fn image(&self) -> &GifImage<C, BO> {
         &self.image
+    }
+
+    pub const fn alpha_mask(&self) -> &'static [u8] {
+        self.alpha_mask
     }
 
     pub const fn delay_centiseconds(&self) -> u16 {
@@ -70,6 +80,7 @@ where
     BO: ByteOrder + 'static,
 {
     image: GifImage<C, BO>,
+    alpha_mask: &'static [u8],
     top_left: Point,
     delay_centiseconds: u16,
     disposal_method: DisposalMethod,
@@ -82,12 +93,14 @@ where
 {
     pub const fn new(
         image: GifImage<C, BO>,
+        alpha_mask: &'static [u8],
         top_left: Point,
         delay_centiseconds: u16,
         disposal_method: DisposalMethod,
     ) -> Self {
         Self {
             image,
+            alpha_mask,
             top_left,
             delay_centiseconds,
             disposal_method,
@@ -96,6 +109,10 @@ where
 
     pub const fn image(&self) -> &GifImage<C, BO> {
         &self.image
+    }
+
+    pub const fn alpha_mask(&self) -> &'static [u8] {
+        self.alpha_mask
     }
 
     pub const fn top_left(&self) -> Point {
@@ -159,10 +176,6 @@ where
         self.frames.get(self.index)
     }
 
-    pub fn current_image(&self) -> Option<&GifImage<C, BO>> {
-        self.current_frame().map(CompleteGifFrame::image)
-    }
-
     pub fn reset(&mut self) {
         self.index = 0;
         self.elapsed_millis = 0;
@@ -197,8 +210,8 @@ where
         D: DrawTarget<Color = C>,
         RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
     {
-        if let Some(image) = self.current_image() {
-            Image::new(image, position).draw(target)
+        if let Some(frame) = self.current_frame() {
+            draw_masked_image(target, frame.image(), frame.alpha_mask(), position)
         } else {
             Ok(())
         }
@@ -287,7 +300,7 @@ where
         RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
     {
         if let Some(frame) = self.current_frame() {
-            Image::new(frame.image(), origin + frame.top_left()).draw(target)
+            Self::draw_frame(target, origin, frame)
         } else {
             Ok(())
         }
@@ -352,7 +365,12 @@ where
         D: DrawTarget<Color = C>,
         RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
     {
-        Image::new(frame.image(), origin + frame.top_left()).draw(target)
+        draw_masked_image(
+            target,
+            frame.image(),
+            frame.alpha_mask(),
+            origin + frame.top_left(),
+        )
     }
 
     fn dispose_frame<D>(
@@ -468,4 +486,43 @@ fn previous_index(index: usize, len: usize) -> Option<usize> {
     } else {
         Some(index - 1)
     }
+}
+
+fn draw_masked_image<C, BO, D>(
+    target: &mut D,
+    image: &GifImage<C, BO>,
+    alpha_mask: &[u8],
+    position: Point,
+) -> Result<(), D::Error>
+where
+    C: PixelColor + From<C::Raw> + 'static,
+    BO: ByteOrder + 'static,
+    D: DrawTarget<Color = C>,
+    RawDataSlice<'static, C::Raw, BO>: IntoIterator<Item = C::Raw>,
+{
+    let size = image.size();
+    let pixel_count = size.width as usize * size.height as usize;
+    target.draw_iter((0..pixel_count).filter_map(|index| {
+        if !mask_bit(alpha_mask, index) {
+            return None;
+        }
+
+        let x = index as u32 % size.width;
+        let y = index as u32 / size.width;
+
+        if y >= size.height {
+            return None;
+        }
+
+        let point = Point::new(x as i32, y as i32);
+        image
+            .pixel(point)
+            .map(|color| Pixel(position + point, color))
+    }))
+}
+
+fn mask_bit(mask: &[u8], index: usize) -> bool {
+    mask.get(index / 8)
+        .map(|byte| byte & (0x80 >> (index % 8)) != 0)
+        .unwrap_or(false)
 }
