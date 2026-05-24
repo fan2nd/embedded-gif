@@ -11,7 +11,7 @@ use embedded_graphics::{
     iterator::raw::RawDataSlice,
     pixelcolor::{
         raw::{BigEndian, ByteOrder},
-        PixelColor, Rgb888,
+        BinaryColor, PixelColor, Rgb565, Rgb888,
     },
     primitives::Rectangle,
     transform::Transform,
@@ -133,74 +133,41 @@ where
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct RawGifRleRun<C = Rgb888>
+pub struct RawGifCompressedFrame<C = Rgb888>
 where
     C: PixelColor + 'static,
 {
-    skip: u16,
-    len: u16,
-    color: C,
-}
-
-impl<C> RawGifRleRun<C>
-where
-    C: PixelColor + 'static,
-{
-    pub const fn new(skip: u16, len: u16, color: C) -> Self {
-        Self { skip, len, color }
-    }
-
-    pub const fn skip(&self) -> u16 {
-        self.skip
-    }
-
-    pub const fn len(&self) -> u16 {
-        self.len
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub const fn color(&self) -> C {
-        self.color
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct RawGifRleFrame<C = Rgb888>
-where
-    C: PixelColor + 'static,
-{
-    runs: &'static [RawGifRleRun<C>],
+    data: &'static [u8],
     size: embedded_graphics::geometry::Size,
     top_left: Point,
     delay_centiseconds: u16,
     disposal_method: DisposalMethod,
+    pixel_color: core::marker::PhantomData<C>,
 }
 
-impl<C> RawGifRleFrame<C>
+impl<C> RawGifCompressedFrame<C>
 where
     C: PixelColor + 'static,
 {
     pub const fn new(
-        runs: &'static [RawGifRleRun<C>],
+        data: &'static [u8],
         size: embedded_graphics::geometry::Size,
         top_left: Point,
         delay_centiseconds: u16,
         disposal_method: DisposalMethod,
     ) -> Self {
         Self {
-            runs,
+            data,
             size,
             top_left,
             delay_centiseconds,
             disposal_method,
+            pixel_color: core::marker::PhantomData,
         }
     }
 
-    pub const fn runs(&self) -> &'static [RawGifRleRun<C>] {
-        self.runs
+    pub const fn data(&self) -> &'static [u8] {
+        self.data
     }
 
     pub const fn size(&self) -> embedded_graphics::geometry::Size {
@@ -323,11 +290,11 @@ where
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct RawRleGif<C = Rgb888>
+pub struct RawCompressedGif<C = Rgb888>
 where
     C: PixelColor + 'static,
 {
-    frames: &'static [RawGifRleFrame<C>],
+    frames: &'static [RawGifCompressedFrame<C>],
     index: usize,
     elapsed_millis: u32,
     composited_index: Option<usize>,
@@ -499,11 +466,11 @@ where
     }
 }
 
-impl<C> RawRleGif<C>
+impl<C> RawCompressedGif<C>
 where
-    C: PixelColor + 'static,
+    C: CompressedColor + PixelColor + 'static,
 {
-    pub const fn new(frames: &'static [RawGifRleFrame<C>]) -> Self {
+    pub const fn new(frames: &'static [RawGifCompressedFrame<C>]) -> Self {
         Self {
             frames,
             index: 0,
@@ -512,7 +479,7 @@ where
         }
     }
 
-    pub const fn frames(&self) -> &'static [RawGifRleFrame<C>] {
+    pub const fn frames(&self) -> &'static [RawGifCompressedFrame<C>] {
         self.frames
     }
 
@@ -528,7 +495,7 @@ where
         self.index
     }
 
-    pub fn current_frame(&self) -> Option<&RawGifRleFrame<C>> {
+    pub fn current_frame(&self) -> Option<&RawGifCompressedFrame<C>> {
         self.frames.get(self.index)
     }
 
@@ -538,7 +505,7 @@ where
         self.composited_index = None;
     }
 
-    pub fn advance(&mut self) -> Option<&RawGifRleFrame<C>> {
+    pub fn advance(&mut self) -> Option<&RawGifCompressedFrame<C>> {
         if self.frames.is_empty() {
             return None;
         }
@@ -625,19 +592,19 @@ where
     fn draw_frame<D>(
         target: &mut D,
         origin: Point,
-        frame: &RawGifRleFrame<C>,
+        frame: &RawGifCompressedFrame<C>,
     ) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = C>,
     {
-        draw_rle_frame(target, frame, origin)
+        draw_compressed_frame(target, frame, origin)
     }
 
     fn dispose_frame<D>(
         target: &mut D,
         origin: Point,
         background: C,
-        frame: &RawGifRleFrame<C>,
+        frame: &RawGifCompressedFrame<C>,
     ) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = C>,
@@ -666,7 +633,7 @@ where
     }
 }
 
-impl<C> RawGifRleFrame<C>
+impl<C> RawGifCompressedFrame<C>
 where
     C: PixelColor + 'static,
 {
@@ -699,7 +666,7 @@ where
     }
 }
 
-impl<C> GifFrameTiming for RawGifRleFrame<C>
+impl<C> GifFrameTiming for RawGifCompressedFrame<C>
 where
     C: PixelColor + 'static,
 {
@@ -796,7 +763,7 @@ where
     }
 }
 
-impl<C> GifFrameBounds for RawGifRleFrame<C>
+impl<C> GifFrameBounds for RawGifCompressedFrame<C>
 where
     C: PixelColor + 'static,
 {
@@ -832,37 +799,155 @@ where
     }
 }
 
-fn draw_rle_frame<C, D>(
+fn draw_compressed_frame<C, D>(
     target: &mut D,
-    frame: &RawGifRleFrame<C>,
+    frame: &RawGifCompressedFrame<C>,
     origin: Point,
 ) -> Result<(), D::Error>
 where
-    C: PixelColor + 'static,
+    C: CompressedColor + PixelColor + 'static,
     D: DrawTarget<Color = C>,
 {
     let width = frame.size().width as usize;
     let height = frame.size().height as usize;
     let pixel_count = width.saturating_mul(height);
-    let mut index = 0usize;
+    let mut reader = CompressedPixels::<C>::new(frame.data(), pixel_count);
 
-    target.draw_iter(frame.runs().iter().flat_map(move |run| {
-        index = index.saturating_add(run.skip() as usize);
-        let start = index;
-        index = index.saturating_add(run.len() as usize);
+    target.draw_iter(core::iter::from_fn(move || {
+        let (pixel_index, color) = reader.next_pixel()?;
+        let x = pixel_index % width;
+        let y = pixel_index / width;
 
-        (start..index.min(pixel_count)).filter_map(move |pixel_index| {
-            let x = pixel_index % width;
-            let y = pixel_index / width;
+        if y >= height {
+            return None;
+        }
 
-            if y >= height {
+        Some(Pixel(
+            origin + frame.top_left() + Point::new(x as i32, y as i32),
+            color,
+        ))
+    }))
+}
+
+const TOKEN_SKIP: u8 = 0b0000_0000;
+const TOKEN_SOLID: u8 = 0b0100_0000;
+const TOKEN_RAW: u8 = 0b1000_0000;
+const TOKEN_KIND_MASK: u8 = 0b1100_0000;
+const TOKEN_LEN_MASK: u8 = 0b0011_1111;
+
+#[doc(hidden)]
+pub trait CompressedColor: Copy {
+    const BYTES_PER_PIXEL: usize;
+
+    fn read(bytes: &[u8]) -> Option<Self>;
+}
+
+impl CompressedColor for Rgb888 {
+    const BYTES_PER_PIXEL: usize = 3;
+
+    fn read(bytes: &[u8]) -> Option<Self> {
+        Some(Self::new(*bytes.first()?, *bytes.get(1)?, *bytes.get(2)?))
+    }
+}
+
+impl CompressedColor for Rgb565 {
+    const BYTES_PER_PIXEL: usize = 2;
+
+    fn read(bytes: &[u8]) -> Option<Self> {
+        let value = u16::from_be_bytes([*bytes.first()?, *bytes.get(1)?]);
+        let red = ((value >> 11) & 0x1f) as u8;
+        let green = ((value >> 5) & 0x3f) as u8;
+        let blue = (value & 0x1f) as u8;
+        Some(Self::new(red, green, blue))
+    }
+}
+
+impl CompressedColor for BinaryColor {
+    const BYTES_PER_PIXEL: usize = 1;
+
+    fn read(bytes: &[u8]) -> Option<Self> {
+        match *bytes.first()? {
+            0 => Some(Self::Off),
+            _ => Some(Self::On),
+        }
+    }
+}
+
+struct CompressedPixels<'a, C>
+where
+    C: CompressedColor,
+{
+    data: &'a [u8],
+    offset: usize,
+    cursor: usize,
+    pixel_count: usize,
+    raw_remaining: usize,
+    solid_remaining: usize,
+    solid_color: Option<C>,
+}
+
+impl<'a, C> CompressedPixels<'a, C>
+where
+    C: CompressedColor,
+{
+    fn new(data: &'a [u8], pixel_count: usize) -> Self {
+        Self {
+            data,
+            offset: 0,
+            cursor: 0,
+            pixel_count,
+            raw_remaining: 0,
+            solid_remaining: 0,
+            solid_color: None,
+        }
+    }
+
+    fn next_pixel(&mut self) -> Option<(usize, C)> {
+        loop {
+            if self.cursor >= self.pixel_count {
                 return None;
             }
 
-            Some(Pixel(
-                origin + frame.top_left() + Point::new(x as i32, y as i32),
-                run.color(),
-            ))
-        })
-    }))
+            if self.raw_remaining > 0 {
+                let color = self.read_color()?;
+                let index = self.cursor;
+                self.cursor += 1;
+                self.raw_remaining -= 1;
+                return Some((index, color));
+            }
+
+            if self.solid_remaining > 0 {
+                let color = self.solid_color?;
+                let index = self.cursor;
+                self.cursor += 1;
+                self.solid_remaining -= 1;
+                return Some((index, color));
+            }
+
+            let token = *self.data.get(self.offset)?;
+            self.offset += 1;
+            let len = usize::from(token & TOKEN_LEN_MASK) + 1;
+
+            match token & TOKEN_KIND_MASK {
+                TOKEN_SKIP => {
+                    self.cursor = self.cursor.saturating_add(len);
+                }
+                TOKEN_SOLID => {
+                    self.solid_color = Some(self.read_color()?);
+                    self.solid_remaining = len;
+                }
+                TOKEN_RAW => {
+                    self.raw_remaining = len;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn read_color(&mut self) -> Option<C> {
+        let end = self.offset.checked_add(C::BYTES_PER_PIXEL)?;
+        let color = C::read(self.data.get(self.offset..end)?)?;
+        self.offset = end;
+        Some(color)
+    }
 }

@@ -25,20 +25,20 @@ the current diff. Use `draw_current_composited` when the caller wants raw storag
 but wants the library to replay raw frames and draw the complete current visual
 state.
 
-Raw GIFs can also use RLE compression:
+Raw GIFs can also use bytecode compression:
 
 ```rust
-use embedded_gif::{include_raw_gif, RawGifRleFrame, RawRleGif};
+use embedded_gif::{include_raw_gif, RawGifCompressedFrame, RawCompressedGif};
 
-static RAW_RLE: &[RawGifRleFrame] =
+static RAW_COMPRESSED: &[RawGifCompressedFrame] =
     include_raw_gif!("tests/fixtures/two_frames.gif", compression = Rle);
 
-let mut animation = RawRleGif::new(RAW_RLE);
+let mut animation = RawCompressedGif::new(RAW_COMPRESSED);
 animation.tick_millis(100);
 ```
 
-RLE stores transparent gaps and same-color opaque runs instead of per-pixel image
-data plus an alpha mask.
+Compressed raw frames use a compact bytecode stream with skip, solid-color, and
+raw-pixel tokens instead of per-pixel image data plus an alpha mask.
 
 Both macros support pixel conversion:
 

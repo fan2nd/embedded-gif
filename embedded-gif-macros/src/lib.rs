@@ -307,14 +307,14 @@ fn expand_raw_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
                 });
             }
             Compression::Rle => {
-                let runs_ident = format_ident!("__EMBEDDED_GIF_RAW_RLE_RUNS_{frame_count}");
-                let runs = rle_runs(&embedded_gif, &frame.buffer, width, height, input.options)?;
+                let data_ident = format_ident!("__EMBEDDED_GIF_RAW_COMPRESSED_{frame_count}");
+                let data = compressed_data(&frame.buffer, width, height, input.options)?;
 
                 frame_tokens.push(quote! {
                     {
-                        const #runs_ident: &[#embedded_gif::RawGifRleRun<#color>] = &[#(#runs),*];
-                        #embedded_gif::RawGifRleFrame::new(
-                            #runs_ident,
+                        const #data_ident: &[u8] = &[#(#data),*];
+                        #embedded_gif::RawGifCompressedFrame::new(
+                            #data_ident,
                             #embedded_gif::embedded_graphics::geometry::Size::new(#width, #height),
                             #embedded_gif::embedded_graphics::geometry::Point::new(#left, #top),
                             #delay,
@@ -331,7 +331,11 @@ fn expand_raw_gif(input: &IncludeGifInput) -> Result<TokenStream2, String> {
 
     let frame_type = match input.options.compression {
         Compression::None => frame_type(&embedded_gif, "RawGifFrame", input.options.pixel_format),
-        Compression::Rle => frame_type(&embedded_gif, "RawGifRleFrame", input.options.pixel_format),
+        Compression::Rle => frame_type(
+            &embedded_gif,
+            "RawGifCompressedFrame",
+            input.options.pixel_format,
+        ),
     };
     Ok(quote! {
         &[
@@ -552,17 +556,12 @@ fn alpha_mask(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     Ok(mask)
 }
 
-fn rle_runs(
-    embedded_gif: &TokenStream2,
+fn compressed_data(
     rgba: &[u8],
     width: u32,
     height: u32,
     options: IncludeGifOptions,
-) -> Result<Vec<TokenStream2>, String> {
-    let mut runs = Vec::new();
-    let mut skip = 0usize;
-    let mut current_color = None;
-    let mut len = 0usize;
+) -> Result<Vec<u8>, String> {
     let dithered_binary = if matches!(options.pixel_format, PixelFormat::BinaryColor)
         && options.dither == Dither::FloydSteinberg
     {
@@ -570,114 +569,168 @@ fn rle_runs(
     } else {
         None
     };
+    let mut symbols = Vec::new();
 
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         if pixel[3] == 0 {
-            flush_rle_run(
-                embedded_gif,
-                options.pixel_format,
-                &mut runs,
-                &mut skip,
-                &mut current_color,
-                &mut len,
-            );
-            skip = skip.saturating_add(1);
+            symbols.push(CompressedSymbol::Transparent);
             continue;
         }
 
-        let color = quantized_color(
+        symbols.push(CompressedSymbol::Opaque(quantized_color(
             options.pixel_format,
             pixel[0],
             pixel[1],
             pixel[2],
             dithered_binary.as_ref().map(|pixels| pixels[index]),
-        );
-        if current_color == Some(color) && len < u16::MAX as usize {
-            len += 1;
-        } else {
-            flush_rle_run(
-                embedded_gif,
-                options.pixel_format,
-                &mut runs,
-                &mut skip,
-                &mut current_color,
-                &mut len,
-            );
-            current_color = Some(color);
-            len = 1;
+        )));
+    }
+
+    Ok(encode_symbols(&symbols, options.pixel_format))
+}
+
+fn encode_symbols(symbols: &[CompressedSymbol], pixel_format: PixelFormat) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut index = 0usize;
+
+    while index < symbols.len() {
+        match symbols[index] {
+            CompressedSymbol::Transparent => {
+                let len = matching_len(symbols, index, |symbol| {
+                    matches!(symbol, CompressedSymbol::Transparent)
+                });
+                push_skip(&mut data, len);
+                index += len;
+            }
+            CompressedSymbol::Opaque(color) => {
+                let solid_len = matching_len(
+                    symbols,
+                    index,
+                    |symbol| matches!(symbol, CompressedSymbol::Opaque(next) if next == color),
+                );
+                let raw_len = opaque_len(symbols, index);
+
+                if solid_len >= 2 || raw_len == 1 {
+                    push_solid(&mut data, pixel_format, color, solid_len);
+                    index += solid_len;
+                } else {
+                    let len = raw_len.min(raw_until_solid(symbols, index));
+                    push_raw(&mut data, pixel_format, &symbols[index..index + len]);
+                    index += len;
+                }
+            }
         }
     }
 
-    flush_rle_run(
-        embedded_gif,
-        options.pixel_format,
-        &mut runs,
-        &mut skip,
-        &mut current_color,
-        &mut len,
-    );
-
-    Ok(runs)
+    data
 }
 
-fn flush_rle_run(
-    embedded_gif: &TokenStream2,
-    pixel_format: PixelFormat,
-    runs: &mut Vec<TokenStream2>,
-    skip: &mut usize,
-    current_color: &mut Option<QuantizedColor>,
-    len: &mut usize,
-) {
-    let Some(color) = current_color.take() else {
-        return;
-    };
-
-    let mut remaining_skip = *skip;
-    let mut remaining_len = *len;
-
-    while remaining_skip > u16::MAX as usize {
-        runs.push(rle_run_token(
-            embedded_gif,
-            pixel_format,
-            u16::MAX,
-            0,
-            color,
-        ));
-        remaining_skip -= u16::MAX as usize;
-    }
-
-    while remaining_len > 0 {
-        let run_len = remaining_len.min(u16::MAX as usize) as u16;
-        runs.push(rle_run_token(
-            embedded_gif,
-            pixel_format,
-            remaining_skip as u16,
-            run_len,
-            color,
-        ));
-        remaining_skip = 0;
-        remaining_len -= usize::from(run_len);
-    }
-
-    *skip = 0;
-    *len = 0;
-}
-
-fn rle_run_token(
-    embedded_gif: &TokenStream2,
-    pixel_format: PixelFormat,
-    skip: u16,
-    len: u16,
-    color: QuantizedColor,
-) -> TokenStream2 {
-    let color = color_constructor(embedded_gif, pixel_format, color);
-    quote!(#embedded_gif::RawGifRleRun::new(#skip, #len, #color))
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum CompressedSymbol {
+    Transparent,
+    Opaque(QuantizedColor),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum QuantizedColor {
     Rgb(u8, u8, u8),
     Binary(bool),
+}
+
+fn matching_len(
+    symbols: &[CompressedSymbol],
+    start: usize,
+    mut matches: impl FnMut(CompressedSymbol) -> bool,
+) -> usize {
+    symbols[start..]
+        .iter()
+        .copied()
+        .take_while(|symbol| matches(*symbol))
+        .count()
+}
+
+fn opaque_len(symbols: &[CompressedSymbol], start: usize) -> usize {
+    matching_len(symbols, start, |symbol| {
+        matches!(symbol, CompressedSymbol::Opaque(_))
+    })
+}
+
+fn raw_until_solid(symbols: &[CompressedSymbol], start: usize) -> usize {
+    let mut len = 0usize;
+
+    while start + len < symbols.len() {
+        let CompressedSymbol::Opaque(color) = symbols[start + len] else {
+            break;
+        };
+
+        let solid_len = matching_len(
+            symbols,
+            start + len,
+            |symbol| matches!(symbol, CompressedSymbol::Opaque(next) if next == color),
+        );
+
+        if len > 0 && solid_len >= 2 {
+            break;
+        }
+
+        len += 1;
+    }
+
+    len
+}
+
+fn push_skip(data: &mut Vec<u8>, mut len: usize) {
+    while len > 0 {
+        let chunk = len.min(64);
+        data.push((chunk - 1) as u8);
+        len -= chunk;
+    }
+}
+
+fn push_solid(
+    data: &mut Vec<u8>,
+    pixel_format: PixelFormat,
+    color: QuantizedColor,
+    mut len: usize,
+) {
+    while len > 0 {
+        let chunk = len.min(64);
+        data.push(0b0100_0000 | (chunk - 1) as u8);
+        push_color(data, pixel_format, color);
+        len -= chunk;
+    }
+}
+
+fn push_raw(data: &mut Vec<u8>, pixel_format: PixelFormat, symbols: &[CompressedSymbol]) {
+    let mut offset = 0usize;
+
+    while offset < symbols.len() {
+        let chunk = (symbols.len() - offset).min(64);
+        data.push(0b1000_0000 | (chunk - 1) as u8);
+
+        for symbol in &symbols[offset..offset + chunk] {
+            let CompressedSymbol::Opaque(color) = *symbol else {
+                unreachable!("raw chunks can only contain opaque pixels");
+            };
+            push_color(data, pixel_format, color);
+        }
+
+        offset += chunk;
+    }
+}
+
+fn push_color(data: &mut Vec<u8>, pixel_format: PixelFormat, color: QuantizedColor) {
+    match (pixel_format, color) {
+        (PixelFormat::Rgb888, QuantizedColor::Rgb(red, green, blue)) => {
+            data.extend_from_slice(&[red, green, blue]);
+        }
+        (PixelFormat::Rgb565, QuantizedColor::Rgb(red, green, blue)) => {
+            let value = (u16::from(red) << 11) | (u16::from(green) << 5) | u16::from(blue);
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        (PixelFormat::BinaryColor, QuantizedColor::Binary(value)) => data.push(u8::from(value)),
+        _ => unreachable!("pixel format and quantized color mismatch"),
+    }
 }
 
 fn dithered_binary_pixels(rgba: &[u8], width: u32, height: u32) -> Result<Vec<bool>, String> {
@@ -704,28 +757,6 @@ fn quantized_color(
         PixelFormat::BinaryColor => QuantizedColor::Binary(
             dithered_binary.unwrap_or_else(|| grayscale(red, green, blue) >= 128),
         ),
-    }
-}
-
-fn color_constructor(
-    embedded_gif: &TokenStream2,
-    pixel_format: PixelFormat,
-    color: QuantizedColor,
-) -> TokenStream2 {
-    match (pixel_format, color) {
-        (PixelFormat::Rgb888, QuantizedColor::Rgb(red, green, blue)) => {
-            quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb888::new(#red, #green, #blue))
-        }
-        (PixelFormat::Rgb565, QuantizedColor::Rgb(red, green, blue)) => {
-            quote!(#embedded_gif::embedded_graphics::pixelcolor::Rgb565::new(#red, #green, #blue))
-        }
-        (PixelFormat::BinaryColor, QuantizedColor::Binary(true)) => {
-            quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor::On)
-        }
-        (PixelFormat::BinaryColor, QuantizedColor::Binary(false)) => {
-            quote!(#embedded_gif::embedded_graphics::pixelcolor::BinaryColor::Off)
-        }
-        _ => unreachable!("pixel format and quantized color mismatch"),
     }
 }
 
